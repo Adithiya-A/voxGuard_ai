@@ -114,7 +114,8 @@ class DeepfakeDetector:
                 "device": self.device,
                 "inference_ms": 0.0,
                 "ai_probability": None,
-                "genuine_probability_pct": None
+                "genuine_probability_pct": None,
+                "available": False,
             }
 
         # 2. Silence bypass: do not run expensive ML inference on ambient/non-speech windows
@@ -131,7 +132,8 @@ class DeepfakeDetector:
                 "device": self.device,
                 "inference_ms": 0.0,
                 "ai_probability": None,
-                "genuine_probability_pct": None
+                "genuine_probability_pct": None,
+                "available": False,
             }
 
         # 3. Check duration before running model (Phase J & Phase K requirement)
@@ -198,7 +200,7 @@ class DeepfakeDetector:
                 )
                 self._class_mapping_logged = True
 
-            prediction = "SPOOF" if spoof_prob >= 0.5 else "LIKELY_GENUINE"
+            prediction = "SPOOF" if spoof_prob >= 0.5 else "BONAFIDE"
             confidence = round(max(spoof_prob, genuine_prob), 4)
 
             ai_prob_pct = int(round(spoof_prob * 100.0))
@@ -221,7 +223,8 @@ class DeepfakeDetector:
                 "device": self.device,
                 "inference_ms": round(t_inference_ms, 1),
                 "ai_probability": ai_prob_pct,
-                "genuine_probability_pct": gen_prob_pct
+                "genuine_probability_pct": gen_prob_pct,
+                "available": True,
             }
 
         except Exception as e:
@@ -239,7 +242,8 @@ class DeepfakeDetector:
                 "inference_ms": 0.0,
                 "error": str(e),
                 "ai_probability": None,
-                "genuine_probability_pct": None
+                "genuine_probability_pct": None,
+                "available": False,
             }
 
     def predict(self, *args, **kwargs) -> Dict[str, Any]:

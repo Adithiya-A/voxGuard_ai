@@ -333,42 +333,43 @@ class AudioStreamProcessor:
             )
             if deepfake_result.get("status") == "OK":
                 buf.aasist_results.append(deepfake_result)
-            else:
-                if not speech_detected:
-                    deepfake_result = {
-                        "status": "NO_SPEECH",
-                        "prediction": "NO_SPEECH",
-                        "spoof_probability": 0.0,
-                        "genuine_probability": 0.0,
-                        "score": None,
-                        "confidence": None,
-                        "model": deepfake_detector.model_name,
-                        "model_version": deepfake_detector.model_version,
-                        "device": deepfake_detector.device,
-                        "inference_ms": 0.0,
-                        "ai_probability": None,
-                        "genuine_probability_pct": None,
-                        "available": True,
-                    }
-                else:
-                    curr_dur = buf.continuous_16k_duration_seconds
-                    req_dur = buf.min_aasist_samples / 16000.0
-                    deepfake_result = {
-                        "status": "NOT_ENOUGH_AUDIO",
-                        "prediction": "NOT_ENOUGH_AUDIO",
-                        "spoof_probability": 0.0,
-                        "genuine_probability": 0.0,
-                        "score": None,
-                        "confidence": None,
-                        "model": deepfake_detector.model_name,
-                        "model_version": deepfake_detector.model_version,
-                        "device": deepfake_detector.device,
-                        "inference_ms": 0.0,
-                        "ai_probability": None,
-                        "genuine_probability_pct": None,
-                        "available": True,
-                        "reason": f"Awaiting sufficient speech buffer ({curr_dur:.2f}s / {req_dur:.2f}s required)"
-                    }
+        elif not speech_detected:
+            deepfake_result = {
+                "status": "NO_SPEECH",
+                "prediction": "INCONCLUSIVE",
+                "aasist_status": "NO_SPEECH",
+                "spoof_probability": None,
+                "genuine_probability": None,
+                "score": None,
+                "confidence": None,
+                "model": deepfake_detector.model_name,
+                "model_version": deepfake_detector.model_version,
+                "device": deepfake_detector.device,
+                "inference_ms": 0.0,
+                "ai_probability": None,
+                "genuine_probability_pct": None,
+                "available": True,
+            }
+        else:
+            curr_dur = buf.continuous_16k_duration_seconds
+            req_dur = buf.min_aasist_samples / 16000.0
+            deepfake_result = {
+                "status": "NOT_ENOUGH_AUDIO",
+                "prediction": "INCONCLUSIVE",
+                "aasist_status": "NOT_ENOUGH_AUDIO",
+                "spoof_probability": None,
+                "genuine_probability": None,
+                "score": None,
+                "confidence": None,
+                "model": deepfake_detector.model_name,
+                "model_version": deepfake_detector.model_version,
+                "device": deepfake_detector.device,
+                "inference_ms": 0.0,
+                "ai_probability": None,
+                "genuine_probability_pct": None,
+                "available": True,
+                "reason": f"Awaiting sufficient speech buffer ({curr_dur:.2f}s / {req_dur:.2f}s required)"
+            }
         anti_spoof_ms = (time.time() - t_anti_start) * 1000.0
 
         # 5. Genuine ECAPA-TDNN Pretrained Speaker Verification (Phase 3 & Phase K)

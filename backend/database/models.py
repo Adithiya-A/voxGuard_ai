@@ -184,22 +184,32 @@ class CallRecord(BaseModel):
                 "social_engineering_risk": 10,
                 "summary": "Live microphone speech session analyzed by VoxGuard neural defense engine."
             }),
-            "caller_context": {
-                "caller_number": "Live Microphone",
-                "telephony_trunk": "Browser WebAudio / WebSocket Ingress",
-                "known_contact": True,
-                "registered_device": True,
-                "caller_reputation": "High Confidence",
-                "caller_risk": 5
+            "caller_context": (self.telemetry_summary or {}).get("caller_context") or {
+                "caller_number": None,
+                "known_contact": None,
+                "caller_risk": None,
+                "status": "NOT_PROVIDED",
+                "note": "Browser microphone session is not telephony caller-ID.",
             },
-            "transaction": {
-                "requested_amount": 0.0,
-                "currency": "INR",
-                "formatted_amount": "N/A",
-                "new_beneficiary": False,
-                "transaction_risk": 0
+            "transaction": (self.telemetry_summary or {}).get("transaction") or {
+                "requested_amount": None,
+                "currency": None,
+                "formatted_amount": None,
+                "new_beneficiary": None,
+                "transaction_risk": None,
+                "status": "NOT_PROVIDED",
             },
             "transcript_history": (self.telemetry_summary or {}).get("transcript_history", []),
+            "transcript": (self.telemetry_summary or {}).get("transcript"),
+            "gemini": (self.telemetry_summary or {}).get("gemini") or (self.telemetry_summary or {}).get("conversation"),
+            "incidents": (self.telemetry_summary or {}).get("incidents", []),
+            "session_context": (self.telemetry_summary or {}).get("session_context"),
             "timeline": self.timeline or []
         }
+        caller_ctx = (self.telemetry_summary or {}).get("caller_context")
+        if caller_ctx:
+            res["caller_context"] = caller_ctx
+        txn_ctx = (self.telemetry_summary or {}).get("transaction")
+        if txn_ctx:
+            res["transaction"] = txn_ctx
         return res

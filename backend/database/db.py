@@ -102,7 +102,6 @@ def init_db(db_path: str = DB_PATH) -> None:
             );
         """)
 
-        # 3. Call Timeline Events Table (optional fine-grained timeline)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS call_timeline (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -111,6 +110,57 @@ def init_db(db_path: str = DB_PATH) -> None:
                 score INTEGER NOT NULL,
                 label TEXT NOT NULL,
                 event_type TEXT NOT NULL DEFAULT 'info',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (call_id) REFERENCES calls(call_id) ON DELETE CASCADE
+            );
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transcripts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                call_id TEXT NOT NULL,
+                text TEXT NOT NULL,
+                full_text TEXT,
+                language TEXT,
+                is_final INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (call_id) REFERENCES calls(call_id) ON DELETE CASCADE
+            );
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_analysis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                call_id TEXT NOT NULL,
+                analysis_json TEXT NOT NULL,
+                risk_score INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (call_id) REFERENCES calls(call_id) ON DELETE CASCADE
+            );
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS call_contexts (
+                call_id TEXT PRIMARY KEY,
+                context_json TEXT NOT NULL,
+                source TEXT DEFAULT 'DEMO_CONTEXT',
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (call_id) REFERENCES calls(call_id) ON DELETE CASCADE
+            );
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS incidents (
+                incident_id TEXT PRIMARY KEY,
+                call_id TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                type TEXT NOT NULL,
+                title TEXT,
+                description TEXT,
+                evidence_json TEXT,
+                recommended_action TEXT,
+                status TEXT DEFAULT 'OPEN',
+                mode TEXT DEFAULT 'REAL',
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (call_id) REFERENCES calls(call_id) ON DELETE CASCADE
             );

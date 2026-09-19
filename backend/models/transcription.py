@@ -1,43 +1,177 @@
-from typing import List, Dict, Any
+import os
+import time
+import logging
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+
+from backend.config import settings
+
+logger = logging.getLogger("voxguard.whisper")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+ALLOWED_WHISPER_MODELS = ("tiny", "base", "small")
+
 
 class TranscriptionService:
+    """
+    Real Whisper-compatible ASR using faster-whisper.
+    Lazy-loaded singleton. Never returns scripted demo transcripts.
+    """
+
     def __init__(self):
-        self.model_name = "Whisper-Large-v3-Turbo"
+        requested = (os.getenv("WHISPER_MODEL") or settings.WHISPER_MODEL or "base").strip().lower()
+        self.model_size = requested if requested in ALLOWED_WHISPER_MODELS else "base"
+        self.engine = "faster-whisper"
+        self.model_name = f"faster-whisper-{self.model_size}"
+        self._model = None
+        self._load_error: Optional[str] = None
+        self.device = "cpu"
+        self.compute_type = "int8"
+
+    def is_loaded(self) -> bool:
+        return self._model is not None
+
+    def get_state(self) -> Dict[str, Any]:
+        return {
+            "available": self._load_error is None,
+            "loaded": self.is_loaded(),
+            "model": self.model_name,
+            "engine": self.engine,
+            "device": self.device,
+            "error": self._load_error,
+        }
+
+    def load_model(self) -> None:
+        if self._model is not None:
+            return
+        try:
+            import torch
+            from faster_whisper import WhisperModel
+
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.compute_type = "float16" if self.device == "cuda" else "int8"
+            t0 = time.time()
+            self._model = WhisperModel(
+                self.model_size,
+                device=self.device,
+                compute_type=self.compute_type,
+            )
+            self._load_error = None
+            logger.info(
+                f"[WHISPER] Loaded {self.model_name} on {self.device} "
+                f"({(time.time() - t0) * 1000:.1f}ms, compute={self.compute_type})"
+            )
+        except Exception as e:
+            self._model = None
+            self._load_error = str(e)
+            logger.error(f"[WHISPER] Unavailable: {e}")
+            raise
+
+    def transcribe_audio(
+        self,
+        audio: np.ndarray,
+        sample_rate: int = 16000,
+    ) -> Dict[str, Any]:
+        duration = float(len(audio) / float(sample_rate)) if audio is not None and len(audio) > 0 else 0.0
+        base = {
+            "text": "",
+            "language": None,
+            "segments": [],
+            "duration": round(duration, 3),
+            "inference_ms": 0.0,
+            "model": self.engine,
+            "model_size": self.model_size,
+            "device": self.device,
+            "available": False,
+        }
+
+        if audio is None or len(audio) == 0:
+            return {**base, "status": "NO_AUDIO", "prediction": "NO_AUDIO"}
+
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+        peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+        if peak > 1.0:
+            audio = audio / (peak + 1e-8)
+        rms = float(np.sqrt(np.mean(audio ** 2))) if len(audio) else 0.0
+        if rms < 1e-4 or duration < 0.25:
+            return {
+                **base,
+                "status": "NO_SPEECH",
+                "available": True,
+                "text": "",
+            }
+
+        try:
+            if not self.is_loaded():
+                self.load_model()
+        except Exception as e:
+            return {
+                **base,
+                "status": "WHISPER_UNAVAILABLE",
+                "available": False,
+                "error": str(e),
+            }
+
+        try:
+            t0 = time.time()
+            segments_iter, info = self._model.transcribe(
+                audio,
+                language=None,
+                vad_filter=True,
+                beam_size=1,
+            )
+            segments: List[Dict[str, Any]] = []
+            texts: List[str] = []
+            for seg in segments_iter:
+                piece = (seg.text or "").strip()
+                if not piece:
+                    continue
+                texts.append(piece)
+                segments.append({
+                    "start": round(float(seg.start), 2),
+                    "end": round(float(seg.end), 2),
+                    "text": piece,
+                })
+            inference_ms = (time.time() - t0) * 1000.0
+            full_text = " ".join(texts).strip()
+            language = getattr(info, "language", None)
+            return {
+                "text": full_text,
+                "language": language,
+                "segments": segments,
+                "duration": round(duration, 3),
+                "inference_ms": round(inference_ms, 1),
+                "model": self.engine,
+                "model_size": self.model_size,
+                "device": self.device,
+                "available": True,
+                "status": "OK" if full_text else "NO_SPEECH",
+            }
+        except Exception as e:
+            logger.error(f"[WHISPER] Inference error: {e}", exc_info=True)
+            return {
+                **base,
+                "status": "MODEL_ERROR",
+                "available": False,
+                "error": str(e),
+            }
 
     def transcribe_chunk(self, chunk_index: int, scenario: str = "clone") -> Dict[str, Any]:
         """
-        Provides progressive streaming transcripts corresponding to the SIH scenario timeline.
+        Demo-only timeline helper. LIVE microphone path must never call this.
         """
-        if scenario == "clone":
-            timeline = [
-                {"timestamp": "00:02", "speaker": "Caller", "text": "Hello? Can you hear me clearly?", "flagged": False},
-                {"timestamp": "00:06", "speaker": "Caller", "text": "Hi, this is Arun, the CFO. We have an emergency.", "flagged": True, "category": "Authority Impersonation"},
-                {"timestamp": "00:11", "speaker": "Caller", "text": "I need you to transfer ₹25 lakh to the new vendor account immediately.", "flagged": True, "category": "Financial Request"},
-                {"timestamp": "00:16", "speaker": "Caller", "text": "Don't discuss this with anyone right now because this acquisition is strictly confidential.", "flagged": True, "category": "Confidentiality Coercion"},
-                {"timestamp": "00:20", "speaker": "Caller", "text": "I am boarding a flight now. Release the RTGS immediately or we lose the contract.", "flagged": True, "category": "Extreme Pressure"}
-            ]
-        elif scenario == "genuine":
-            timeline = [
-                {"timestamp": "00:02", "speaker": "Arun Sharma", "text": "Good afternoon, finance team. Checking in on the Q3 audit report.", "flagged": False},
-                {"timestamp": "00:07", "speaker": "Arun Sharma", "text": "Please confirm the routine payroll batch was cleared per standard operating procedure.", "flagged": False},
-                {"timestamp": "00:14", "speaker": "Arun Sharma", "text": "I'll review the summary at tomorrow's scheduled executive board meeting.", "flagged": False}
-            ]
-        else: # social_eng
-            timeline = [
-                {"timestamp": "00:03", "speaker": "Caller", "text": "Hey there, this is IT Security Helpdesk. We detected suspicious sign-ins on your portal.", "flagged": True, "category": "Authority Impersonation"},
-                {"timestamp": "00:09", "speaker": "Caller", "text": "To prevent account lockout, I need you to confirm your one-time SMS verification passcode.", "flagged": True, "category": "Credential Harvesting"},
-                {"timestamp": "00:16", "speaker": "Caller", "text": "Hurry up, your session token is expiring in 30 seconds!", "flagged": True, "category": "Urgency"}
-            ]
-
-        idx = min(chunk_index, len(timeline) - 1)
-        current = timeline[idx]
-        all_so_far = timeline[:idx + 1]
-
         return {
-            "current_line": current,
-            "transcript_history": all_so_far,
-            "full_text": " ".join([t["text"] for t in all_so_far]),
-            "model_version": self.model_name
+            "current_line": None,
+            "transcript_history": [],
+            "full_text": "",
+            "model_version": self.model_name,
+            "status": "DEMO_ONLY",
+            "note": "Scripted demo transcripts are isolated from LIVE Whisper ASR.",
+            "chunk_index": chunk_index,
+            "scenario": scenario,
         }
+
 
 transcription_service = TranscriptionService()

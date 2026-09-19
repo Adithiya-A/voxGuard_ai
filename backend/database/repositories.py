@@ -264,5 +264,163 @@ class CallRepository:
                 "real_threats": real_threats
             }
 
+    def save_timeline_event(self, call_id: str, event: Dict[str, Any]) -> None:
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with get_db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO call_timeline (call_id, timestamp, score, label, event_type, created_at)
+                VALUES (?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    call_id,
+                    event.get("time") or now,
+                    int(event.get("score") or 0),
+                    event.get("label") or "",
+                    event.get("type") or "info",
+                    now,
+                ),
+            )
+            conn.commit()
+
+    def save_transcript(self, call_id: str, text: str, full_text: str, language: Optional[str], is_final: bool = True) -> None:
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with get_db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO transcripts (call_id, text, full_text, language, is_final, created_at)
+                VALUES (?, ?, ?, ?, ?, ?);
+                """,
+                (call_id, text, full_text, language, 1 if is_final else 0, now),
+            )
+            conn.commit()
+
+    def save_conversation_analysis(self, call_id: str, analysis: Dict[str, Any]) -> None:
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with get_db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO conversation_analysis (call_id, analysis_json, risk_score, created_at)
+                VALUES (?, ?, ?, ?);
+                """,
+                (call_id, json.dumps(analysis), int(analysis.get("risk_score") or analysis.get("social_engineering_risk") or 0), now),
+            )
+            conn.commit()
+
+    def save_context(self, call_id: str, context: Dict[str, Any], source: str = "DEMO_CONTEXT") -> None:
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with get_db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO call_contexts (call_id, context_json, source, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(call_id) DO UPDATE SET
+                    context_json = excluded.context_json,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at;
+                """,
+                (call_id, json.dumps(context), source, now),
+            )
+            conn.commit()
+
+    def get_context(self, call_id: str) -> Optional[Dict[str, Any]]:
+        with get_db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT context_json, source FROM call_contexts WHERE call_id = ?;", (call_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            try:
+                data = json.loads(row["context_json"])
+            except Exception:
+                data = {}
+            data["source"] = row["source"]
+            return data
+
+
+class IncidentRepository:
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
+
+    def create_incident(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        record.setdefault("created_at", now)
+        record.setdefault("status", "OPEN")
+        record.setdefault("mode", "REAL")
+        with get_db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO incidents (
+                    incident_id, call_id, severity, type, title, description,
+                    evidence_json, recommended_action, status, mode, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    record["incident_id"],
+                    record["call_id"],
+                    record.get("severity", "HIGH"),
+                    record.get("type", "THREAT"),
+                    record.get("title"),
+                    record.get("description"),
+                    json.dumps(record.get("evidence") or {}),
+                    record.get("recommended_action"),
+                    record.get("status", "OPEN"),
+                    record.get("mode", "REAL"),
+                    record.get("created_at", now),
+                ),
+            )
+            conn.commit()
+        return record
+
+    def list_incidents(self, mode_filter: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        with get_db(self.db_path) as conn:
+            cursor = conn.cursor()
+            if mode_filter and mode_filter.upper() not in ("ALL", ""):
+                cursor.execute(
+                    "SELECT * FROM incidents WHERE UPPER(mode) = ? ORDER BY created_at DESC LIMIT ?;",
+                    (mode_filter.upper(), limit),
+                )
+            else:
+                cursor.execute("SELECT * FROM incidents ORDER BY created_at DESC LIMIT ?;", (limit,))
+            rows = cursor.fetchall()
+            out = []
+            for row in rows:
+                evidence = {}
+                if row["evidence_json"]:
+                    try:
+                        evidence = json.loads(row["evidence_json"])
+                    except Exception:
+                        evidence = {}
+                out.append({
+                    "incident_id": row["incident_id"],
+                    "call_id": row["call_id"],
+                    "severity": row["severity"],
+                    "type": row["type"],
+                    "threat_type": row["type"],
+                    "title": row["title"],
+                    "threat_label": row["title"],
+                    "description": row["description"],
+                    "evidence": evidence,
+                    "recommended_action": row["recommended_action"],
+                    "status": row["status"],
+                    "mode": row["mode"],
+                    "created_at": row["created_at"],
+                    "opened_at": row["created_at"],
+                })
+            return out
+
+    def get_incident(self, incident_id: str) -> Optional[Dict[str, Any]]:
+        for inc in self.list_incidents(limit=1000):
+            if inc["incident_id"] == incident_id:
+                return inc
+        return None
+
+
 speaker_repo = SpeakerRepository()
 call_repo = CallRepository()
+incident_repo = IncidentRepository()
