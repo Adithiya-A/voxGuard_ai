@@ -8,23 +8,38 @@ import numpy as np
 import torch
 
 from backend.models.aasist_arch import Model as AASISTModel
-from backend.audio.preprocessing import load_audio_bytes, resample_to_16k, preprocess_for_speaker_model
+from backend.audio.preprocessing import (
+    load_audio_bytes,
+    resample_to_16k,
+    preprocess_for_speaker_model,
+    normalize_for_aasist,
+    compute_audio_diagnostics,
+)
 
 logger = logging.getLogger("voxguard.antispoof")
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 AASIST_WEIGHTS_URL = "https://raw.githubusercontent.com/clovaai/aasist/main/models/weights/AASIST.pth"
+AASIST_INPUT_SAMPLES = 64600  # Exactly 64,600 samples (~4.0375s at 16kHz)
 
 AASIST_CONFIG = {
     "architecture": "AASIST",
-    "nb_samp": 64600,
+    "nb_samp": AASIST_INPUT_SAMPLES,
     "first_conv": 128,
     "filts": [70, [1, 32], [32, 32], [32, 64], [64, 64]],
     "gat_dims": [64, 32],
     "pool_ratios": [0.5, 0.7, 0.5, 0.5],
     "temperatures": [2.0, 2.0, 100.0, 100.0]
 }
+
+def pad_aasist(x: np.ndarray, max_len: int = AASIST_INPUT_SAMPLES) -> np.ndarray:
+    """Official ASVspoof/AASIST repetition padding."""
+    x_len = x.shape[0]
+    if x_len >= max_len:
+        return x[:max_len]
+    num_repeats = int(max_len / max(1, x_len)) + 1
+    return np.tile(x, num_repeats)[:max_len]
 
 class DeepfakeDetector:
     """
@@ -158,6 +173,7 @@ class DeepfakeDetector:
                 "inference_ms": 0.0,
                 "ai_probability": None,
                 "genuine_probability_pct": None,
+                "available": True,
                 "reason": f"Awaiting sufficient speech buffer ({audio_dur:.2f}s / {min_required_samples / float(sample_rate):.2f}s required)"
             }
 
@@ -165,21 +181,21 @@ class DeepfakeDetector:
             # 4. Canonical preprocessing: mono, DC removal, anti-aliased 16kHz resampling, peak control
             audio_16k, _ = preprocess_for_speaker_model(audio, sample_rate=sample_rate, tag="AASIST")
 
-            # 5. Lazy model loading
+            # 5. Calibrate input waveform to AASIST's nominal ASVspoof 2019 conversational scale
+            # Prevents SincNet first layer batch norm saturation from microphone AGC peaks
+            audio_norm = normalize_for_aasist(audio_16k)
+
+            # 6. Lazy model loading
             if not self.is_loaded():
                 self.load_model()
 
-            # 6. Prepare input tensor of 64,600 samples (~4.04s at 16kHz)
-            nb_samp = AASIST_CONFIG["nb_samp"]
-            if len(audio_16k) < nb_samp:
-                shortage = nb_samp - len(audio_16k)
-                audio_padded = np.pad(audio_16k, (0, shortage), "reflect")
-            else:
-                audio_padded = audio_16k[:nb_samp]
+            # 7. Prepare input tensor of exactly AASIST_INPUT_SAMPLES (64,600 samples ~4.0375s at 16kHz)
+            audio_padded = pad_aasist(audio_norm, AASIST_INPUT_SAMPLES)
+            diag = compute_audio_diagnostics(audio_padded, 16000)
 
             x = torch.from_numpy(audio_padded).float().unsqueeze(0).to(self.device)
 
-            # 7. Execute forward pass
+            # 8. Execute forward pass
             t_start = time.time()
             with torch.no_grad():
                 _, output = self.model(x)
@@ -207,8 +223,10 @@ class DeepfakeDetector:
             gen_prob_pct = 100 - ai_prob_pct
 
             logger.info(
-                f"[ANTI-SPOOF] Inference: {t_inference_ms:.1f}ms | Prediction: {prediction} "
-                f"| Spoof Prob: {spoof_prob * 100:.1f}% | Score: {bonafide_score:.2f} | Device: {self.device}"
+                f"[AASIST_DIAG] samples={diag['sample_count']} | duration={diag['duration']}s "
+                f"| peak={diag['peak']} | rms={diag['rms']} | clipping={diag['clipping_percentage']}% "
+                f"| raw_logits={output[0].tolist()} | probs={[round(p, 5) for p in probs[0].tolist()]} "
+                f"| prediction={prediction} (spoof={spoof_prob * 100:.1f}%) | Device: {self.device}"
             )
 
             return {

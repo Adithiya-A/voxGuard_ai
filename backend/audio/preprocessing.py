@@ -73,17 +73,21 @@ def compute_audio_diagnostics(audio: np.ndarray, sample_rate: int = 16000) -> Di
             "sample_rate": sample_rate,
             "sample_count": 0,
             "duration": 0.0,
+            "dtype": "float32",
             "min": 0.0,
             "max": 0.0,
             "mean": 0.0,
             "rms": 0.0,
             "peak": 0.0,
+            "clipped_sample_count": 0,
+            "clipping_percentage": 0.0,
             "clipping_pct": 0.0
         }
 
     peak = float(np.max(np.abs(audio)))
     rms = float(np.sqrt(np.mean(audio ** 2)))
-    clipping_pct = float(np.mean(np.abs(audio) >= 0.999) * 100.0)
+    clipped_count = int(np.sum(np.abs(audio) >= 0.999))
+    clipping_pct = float(clipped_count / len(audio) * 100.0)
 
     return {
         "sample_rate": sample_rate,
@@ -95,6 +99,8 @@ def compute_audio_diagnostics(audio: np.ndarray, sample_rate: int = 16000) -> Di
         "mean": round(float(np.mean(audio)), 6),
         "rms": round(rms, 4),
         "peak": round(peak, 4),
+        "clipped_sample_count": clipped_count,
+        "clipping_percentage": round(clipping_pct, 2),
         "clipping_pct": round(clipping_pct, 2)
     }
 
@@ -103,8 +109,24 @@ def log_audio_diagnostics(tag: str, diag: Dict[str, Any]) -> None:
     logger.info(
         f"[AUDIO-DIAG] [{tag}] sr={diag.get('sample_rate')}Hz | duration={diag.get('duration')}s "
         f"| peak={diag.get('peak')} | rms={diag.get('rms')} | mean={diag.get('mean')} "
-        f"| clipping={diag.get('clipping_pct')}%"
+        f"| clipped={diag.get('clipped_sample_count')} ({diag.get('clipping_pct')}%)"
     )
+
+def normalize_for_aasist(audio: np.ndarray, target_peak: float = 0.09) -> np.ndarray:
+    """
+    Calibrates input speech waveform to AASIST's nominal ASVspoof 2019 conversational scale.
+    ASVspoof 2019 LA evaluation recordings have nominal peak ~0.08-0.12 and RMS ~0.02.
+    Browser microphones with AGC deliver peaks reaching 0.50-1.00 which saturate
+    AASIST's SincNet first layer batch norm (running_mean=0.0030), causing false spoofs.
+    This linear scaling preserves exact phase, waveform geometry, and spectro-temporal cues.
+    """
+    if audio is None or len(audio) == 0:
+        return audio
+    peak = float(np.max(np.abs(audio)))
+    if peak > target_peak and peak > 1e-6:
+        scaled = audio * (target_peak / peak)
+        return scaled.astype(np.float32)
+    return audio.astype(np.float32)
 
 def preprocess_for_speaker_model(
     audio: np.ndarray,

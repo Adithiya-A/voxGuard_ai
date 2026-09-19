@@ -10,14 +10,21 @@ export default function CallHistory() {
   const [search, setSearch] = useState('');
 
   const fetchCallsList = () => {
-    api.getCalls()
-      .then((data) => setCalls(data))
+    api.getCalls(modeFilter === 'ALL' ? null : modeFilter)
+      .then((data) => setCalls(Array.isArray(data) ? data : []))
       .catch(() => {});
   };
 
   useEffect(() => {
     fetchCallsList();
-  }, []);
+    const onFocus = () => fetchCallsList();
+    window.addEventListener('focus', onFocus);
+    const timer = setInterval(fetchCallsList, 4000);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      clearInterval(timer);
+    };
+  }, [modeFilter]);
 
   const realCallsCount = calls.filter((c) => (c.mode === 'REAL' || c.call_id?.startsWith('VS-LIVE-'))).length;
   const demoCallsCount = calls.length - realCallsCount;

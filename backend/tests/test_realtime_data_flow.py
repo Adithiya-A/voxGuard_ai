@@ -77,6 +77,8 @@ class TestRealtimeDataFlow(unittest.TestCase):
             started_msg = ws.receive_json()
             self.assertEqual(started_msg["type"], "AUDIO_STREAM_STARTED")
             self.assertEqual(started_msg["call_id"], call_id)
+            sess_msg = ws.receive_json()
+            self.assertEqual(sess_msg["type"], "SESSION_STARTED")
 
             # 3. Stream 1.5s audio chunk
             t = np.linspace(0, 1.5, 24000)
@@ -90,7 +92,13 @@ class TestRealtimeDataFlow(unittest.TestCase):
 
             # 4. Send STOP_AUDIO_STREAM
             ws.send_json({"type": "STOP_AUDIO_STREAM"})
-            stopped_msg = ws.receive_json()
+            stopped_msg = None
+            for _ in range(10):
+                msg = ws.receive_json()
+                if msg.get("type") == "AUDIO_STREAM_STOPPED":
+                    stopped_msg = msg
+                    break
+            self.assertIsNotNone(stopped_msg)
             self.assertEqual(stopped_msg["type"], "AUDIO_STREAM_STOPPED")
             self.assertEqual(stopped_msg["call_id"], call_id)
             self.assertGreaterEqual(stopped_msg["summary"]["total_windows"], 1)

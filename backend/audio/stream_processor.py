@@ -1,3 +1,4 @@
+import os
 import time
 import numpy as np
 from typing import Dict, Any, Optional, Tuple, List
@@ -5,7 +6,7 @@ import logging
 
 from backend.audio.vad import dsp_vad
 from backend.models.prosody import prosody_analyzer
-from backend.models.deepfake_detector import deepfake_detector
+from backend.models.deepfake_detector import deepfake_detector, AASIST_INPUT_SAMPLES
 from backend.models.speaker_verifier import speaker_verifier
 from backend.audio.preprocessing import preprocess_for_speaker_model, resample_to_16k
 from backend.database.repositories import call_repo
@@ -15,6 +16,8 @@ from backend.services import live_semantics
 logger = logging.getLogger("voxguard.audio")
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+LIVE_ANALYSIS_WINDOW_SECONDS = 3.0
 
 class CallAudioBuffer:
     """
@@ -28,7 +31,7 @@ class CallAudioBuffer:
         input_sample_rate: int = 48000,
         channels: int = 1,
         target_sample_rate: int = 16000,
-        window_seconds: float = 3.0,
+        window_seconds: float = LIVE_ANALYSIS_WINDOW_SECONDS,
         hop_seconds: float = 1.0,
         claimed_speaker_id: str = "cfo_arun"
     ):
@@ -72,7 +75,7 @@ class CallAudioBuffer:
         if call_id.startswith("TEST-AASIST-"):
             self.min_aasist_samples = 24000  # 1.5s for existing unit test compatibility
         else:
-            self.min_aasist_samples = 64600  # 4.0375s native input length for real microphone audio
+            self.min_aasist_samples = AASIST_INPUT_SAMPLES  # 4.0375s native input length for real microphone audio
 
     def __getitem__(self, key: str):
         if hasattr(self, key):
@@ -164,6 +167,20 @@ class CallAudioBuffer:
             return None
         return self.continuous_16k[-self.min_aasist_samples:].copy()
 
+    def dump_wav(self, output_path: str) -> str:
+        """Saves current continuous 16kHz audio buffer as 16kHz 16-bit mono WAV (dev-only)."""
+        import wave
+        if len(self.continuous_16k) == 0:
+            raise ValueError("Buffer is empty")
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        int16_data = np.clip(self.continuous_16k * 32767.0, -32768, 32767).astype(np.int16)
+        with wave.open(output_path, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(int16_data.tobytes())
+        return output_path
+
     def add_speech_embedding(self, emb: np.ndarray, max_history: int = 15) -> np.ndarray:
         """
         Accumulates a normalized embedding from a valid speech window.
@@ -247,7 +264,7 @@ class AudioStreamProcessor:
                 started_at=now,
                 sample_rate=sample_rate,
                 channel_count=channels,
-                trust_score=None,
+                trust_score=85,
                 trust_level="PENDING",
                 security_decision="MONITOR",
                 action="MONITOR"
@@ -280,6 +297,16 @@ class AudioStreamProcessor:
                 pass
             logger.info(f"[CALL] Updated claimed speaker for {call_id} to '{claimed_speaker_id}'")
 
+    def dump_buffer_wav(self, call_id: str, output_path: Optional[str] = None) -> str:
+        """Saves active live audio buffer as 16kHz WAV for inspection (dev-only)."""
+        buf = self.call_buffers.get(call_id)
+        if not buf:
+            raise KeyError(f"Call {call_id} not found in active buffers")
+        if not output_path:
+            import tempfile
+            output_path = os.path.join(tempfile.gettempdir(), f"voxguard_{call_id}.wav")
+        return buf.dump_wav(output_path)
+
     def process_chunk(self, call_id: str, pcm_bytes: bytes) -> Optional[Dict[str, Any]]:
         """
         Accepts incoming binary PCM16 audio bytes for a call.
@@ -301,7 +328,11 @@ class AudioStreamProcessor:
 
         window = buf.get_analysis_window()
         window_duration = len(window) / float(buf.target_sample_rate)
-        logger.info(f"[AUDIO] Processing {window_duration:.2f}s window for {call_id} (continuous 16k: {buf.continuous_16k_duration_seconds:.2f}s)")
+        logger.info(
+            f"[AUDIO_BYTES_RECEIVED] {call_id}: bytes={len(pcm_bytes)} | "
+            f"BUFFER_DURATION={buf.continuous_16k_duration_seconds:.2f}s | "
+            f"Processing {window_duration:.2f}s window"
+        )
 
         # 1. DSP VAD Speech Detection
         t_vad_start = time.time()
@@ -404,19 +435,29 @@ class AudioStreamProcessor:
                 speaker_result["status"] = "INCONCLUSIVE"
                 speaker_result["error"] = f"Accumulating voiceprint across speech windows ({num_accumulated}/{buf.min_speaker_windows})"
 
-        # 6. Transient Voice Clone Paradox Check
-        is_spoof = (deepfake_result.get("prediction") == "SPOOF") or ((deepfake_result.get("spoof_probability") or 0.0) >= 0.70)
+        # 6. Voice Clone Paradox — only MATCH + SPOOF (never INCONCLUSIVE)
+        is_spoof = (deepfake_result.get("status") == "OK" and deepfake_result.get("prediction") == "SPOOF")
         is_speaker_match = (speaker_result.get("status") == "MATCH")
         transient_voice_clone = bool(is_spoof and is_speaker_match)
 
-        # 7. Preliminary Trust Calculation
-        preliminary_trust = self._calculate_preliminary_trust(
-            anti_spoof_result=deepfake_result,
-            speaker_result=speaker_result,
-            prosody_anomaly=prosody_result.get("behavior_anomaly", 15),
+        # 7. Deterministic trust fusion (Gemini/context included when already present)
+        fused_trust = live_semantics.fuse_trust(
+            buf,
+            aasist=deepfake_result,
+            ecapa=speaker_result,
+            prosody=prosody_result,
             speech_detected=speech_detected,
-            possible_voice_clone=transient_voice_clone
         )
+        preliminary_trust = {
+            "score": fused_trust.get("trust_score", 85),
+            "risk_level": fused_trust.get("risk_level", "LOW"),
+            "recommended_action": fused_trust.get("recommended_action", "ALLOW"),
+            "label": fused_trust.get("action_label", ""),
+            "trust_state": "ACTIVE" if fused_trust.get("signal_status", {}).get("aasist") == "available" else "PROVISIONAL",
+            "formula": "Weighted fusion: AASIST + ECAPA + Prosody + Gemini + Context",
+            "signal_status": fused_trust.get("signal_status"),
+            "breakdown": fused_trust.get("breakdown"),
+        }
 
         total_ms = (time.time() - t_start) * 1000.0
         logger.info(
@@ -512,13 +553,19 @@ class AudioStreamProcessor:
                     )
                 },
                 "transcription": {
-                    "text": None,
-                    "status": "AWAITING_PHASE_4_WHISPER"
+                    "text": buf.full_transcript or None,
+                    "status": buf.last_asr_status or "PENDING_WHISPER",
+                    "history": buf.transcript_history,
                 },
-                "conversation": {
+                "conversation": buf.conversation_analysis or {
                     "risk": None,
-                    "status": "AWAITING_PHASE_5_GEMINI"
+                    "status": "PENDING_GEMINI",
                 },
+                "session_context": buf.session_context,
+                "caller_context": buf.caller_eval,
+                "transaction": buf.transaction_eval,
+                "incidents": buf.incidents,
+                "fused_trust": fused_trust,
                 "preliminary_trust": preliminary_trust,
                 "latency_ms": {
                     "vad": round(vad_ms, 1),
@@ -532,6 +579,70 @@ class AudioStreamProcessor:
         }
         buf.last_analysis = payload
         return payload
+
+    def run_incremental_asr(self, call_id: str) -> Optional[Dict[str, Any]]:
+        buf = self.call_buffers.get(call_id)
+        if not buf:
+            return None
+        return live_semantics.incremental_asr(buf)
+
+    def run_conversation_update(self, call_id: str, full_text: str, force: bool = False) -> Optional[Dict[str, Any]]:
+        buf = self.call_buffers.get(call_id)
+        if not buf:
+            return None
+        return live_semantics.run_gemini(buf, full_text, force=force)
+
+    def apply_context(self, call_id: str, updates: Dict[str, Any], source: str = "DEMO_CONTEXT") -> Dict[str, Any]:
+        buf = self.call_buffers.get(call_id)
+        if buf is None:
+            from backend.intelligence.context import context_engine, empty_session_context
+            ctx = context_engine.merge_session_context(empty_session_context(), updates, source=source)
+            caller = context_engine.evaluate_caller(
+                caller_number=ctx.get("caller_number"),
+                known_contact=ctx.get("known_contact"),
+                claimed_identity=ctx.get("claimed_identity"),
+                contact_history=ctx.get("contact_history"),
+                source=source,
+            )
+            txn = context_engine.evaluate_transaction(
+                amount=ctx.get("transaction_amount"),
+                currency=ctx.get("transaction_currency"),
+                beneficiary_name=ctx.get("beneficiary") if isinstance(ctx.get("beneficiary"), str) else None,
+                transaction_type=ctx.get("transaction_type"),
+                source=source,
+            )
+            payload = {"session": ctx, "caller": caller, "transaction": txn, "source": source, "label": ctx.get("label")}
+            try:
+                call_repo.save_context(call_id, payload, source)
+            except Exception:
+                pass
+            return payload
+        result = live_semantics.apply_context(buf, updates, source=source)
+        last = buf.last_analysis or {}
+        data = last.get("data") or {}
+        live_semantics.fuse_trust(
+            buf,
+            aasist=(data.get("voice_authenticity") or {}).get("anti_spoof") or {},
+            ecapa=data.get("speaker_verification") or {},
+            prosody=data.get("prosody") or {},
+            speech_detected=bool(data.get("speech_detected")),
+        )
+        live_semantics.persist_live_telemetry(call_id, buf)
+        return result
+
+    def maybe_incidents(self, call_id: str) -> List[Dict[str, Any]]:
+        buf = self.call_buffers.get(call_id)
+        if not buf or not buf.last_analysis:
+            return []
+        data = buf.last_analysis.get("data") or {}
+        aasist = (data.get("voice_authenticity") or {}).get("anti_spoof") or {}
+        ecapa = data.get("speaker_verification") or {}
+        return live_semantics.maybe_create_incidents(buf, aasist, ecapa)
+
+    def persist_semantics(self, call_id: str) -> None:
+        buf = self.call_buffers.get(call_id)
+        if buf:
+            live_semantics.persist_live_telemetry(call_id, buf)
 
     def _extract_spectral_features(self, audio: np.ndarray, sample_rate: int = 16000) -> Dict[str, Any]:
         """Calculates real spectral and temporal measurements directly from current audio window."""
@@ -829,7 +940,23 @@ class AudioStreamProcessor:
             "voice_clone_paradox": final_voice_clone,
             "status": "BLOCKED" if final_decision == "BLOCK_TRANSACTION" else ("ALLOWED" if final_decision == "ALLOW" else final_decision),
             "timeline": buf.timeline_events,
-            "last_analysis": buf.last_analysis
+            "last_analysis": buf.last_analysis,
+            "transcript": getattr(buf, "full_transcript", ""),
+            "transcript_history": getattr(buf, "transcript_history", []),
+            "gemini": getattr(buf, "conversation_analysis", None),
+            "session_context": getattr(buf, "session_context", None),
+            "incidents": getattr(buf, "incidents", []),
+            "telemetry_summary": {
+                "transcript": getattr(buf, "full_transcript", ""),
+                "transcript_history": getattr(buf, "transcript_history", []),
+                "gemini": getattr(buf, "conversation_analysis", None),
+                "conversation": getattr(buf, "conversation_analysis", None),
+                "session_context": getattr(buf, "session_context", None),
+                "caller_context": getattr(buf, "caller_eval", None),
+                "transaction": getattr(buf, "transaction_eval", None),
+                "incidents": getattr(buf, "incidents", []),
+                "prosody": ((buf.last_analysis or {}).get("data") or {}).get("prosody"),
+            },
         }
 
         # 5. Persist Finalized Call Record to SQLite (Phase D)

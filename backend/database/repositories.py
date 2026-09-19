@@ -90,6 +90,9 @@ class CallRepository:
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
 
+    def save_call(self, record: CallRecord) -> CallRecord:
+        return self.create_call(record=record)
+
     def create_call(self, record: Optional[CallRecord] = None, **kwargs) -> CallRecord:
         if record is None:
             now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -222,6 +225,24 @@ class CallRepository:
 
         self.update_call_telemetry(call_id, updates)
         logger.info(f"[DB] Finalized call {call_id}: duration={formatted_dur}, trust={updates['trust_score']}, speaker={updates['speaker_status']}, aasist={updates['anti_spoof_prediction']}")
+        try:
+            from backend.services.firebase_sync import sync_call
+            sync_call(call_id, {
+                "call_id": call_id,
+                "status": "COMPLETED",
+                "duration_seconds": duration_sec,
+                "duration_formatted": formatted_dur,
+                "trust_score": updates["trust_score"],
+                "trust_level": updates["trust_level"],
+                "security_decision": updates["security_decision"],
+                "anti_spoof_prediction": updates["anti_spoof_prediction"],
+                "speaker_status": updates["speaker_status"],
+                "speaker_similarity": updates["speaker_similarity"],
+                "possible_voice_clone": bool(updates["possible_voice_clone"]),
+                "telemetry_summary": summary.get("telemetry_summary")
+            })
+        except Exception:
+            pass
         return self.get_call(call_id)
 
     def get_call(self, call_id: str) -> Optional[CallRecord]:
@@ -283,6 +304,27 @@ class CallRepository:
                 ),
             )
             conn.commit()
+
+    def append_timeline_event(self, call_id: str, event: Dict[str, Any]) -> None:
+        self.save_timeline_event(call_id, event)
+
+    def get_timeline(self, call_id: str) -> List[Dict[str, Any]]:
+        with get_db(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM call_timeline WHERE call_id = ? ORDER BY id ASC;", (call_id,))
+            rows = cursor.fetchall()
+            return [
+                {
+                    "id": r["id"],
+                    "call_id": r["call_id"],
+                    "timestamp": r["timestamp"],
+                    "score": r["score"],
+                    "label": r["label"],
+                    "event_type": r["event_type"],
+                    "created_at": r["created_at"],
+                }
+                for r in rows
+            ]
 
     def save_transcript(self, call_id: str, text: str, full_text: str, language: Optional[str], is_final: bool = True) -> None:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

@@ -1,9 +1,15 @@
 import asyncio
 import json
+import logging
+import os
 import time
 from typing import Dict, Set
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+
+logger = logging.getLogger("voxguard.main")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 from backend.config import settings
 from backend.api import calls, incidents, analytics, audit, demo, settings as settings_api
@@ -35,8 +41,12 @@ app.include_router(settings_api.router)
 from backend.audio.stream_processor import stream_processor
 from backend.models.deepfake_detector import deepfake_detector
 from backend.models.speaker_verifier import speaker_verifier
+from backend.models.transcription import transcription_service
 from backend.audio.preprocessing import load_audio_bytes, preprocess_for_speaker_model
 from backend.database.db import init_db
+from backend.services.events import ws_event
+from backend.services.firebase_sync import init_firebase, firebase_status
+from backend.services import live_semantics
 from pydantic import BaseModel
 from typing import Optional
 import numpy as np
@@ -46,6 +56,7 @@ def startup_event():
     """Ensure database schema is initialized and hydrate enrolled speakers on startup."""
     init_db()
     speaker_verifier.reload_from_database()
+    init_firebase()
 
 @app.get("/api/health")
 def health_check():
@@ -60,9 +71,10 @@ def health_check():
             "prosody_analyzer": "ONLINE (DSP Autocorrelation F0/Cadence)",
             "deepfake_detector": f"ONLINE (AASIST - ASVspoof2019-LA, Device: {deepfake_detector.device})",
             "speaker_verification": f"ONLINE (ECAPA-TDNN - VoxCeleb, Device: {speaker_verifier.device})",
-            "transcription": "AWAITING_PHASE_4 (Whisper)",
+            "transcription": transcription_service.get_state(),
             "conversation_intelligence": "ONLINE (Gemini/Heuristic)",
             "trust_engine": "ONLINE (Dynamic Attestation)",
+            "firebase": firebase_status(),
             "blockchain_audit": "ONLINE (SHA-256 Ledger Anchor)"
         },
         "anti_spoof": {
@@ -157,6 +169,11 @@ def enroll_speaker_profile(req: EnrollRequest):
     )
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Enrollment failed"))
+    try:
+        from backend.services.firebase_sync import sync_speaker
+        sync_speaker(clean_id, {k: v for k, v in result.items() if k != "embedding"})
+    except Exception:
+        pass
     return result
 
 @app.delete("/api/speakers/{speaker_id}")
@@ -255,33 +272,124 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+
+async def _broadcast_live_events(call_id: str, analysis: dict) -> None:
+    """Keep AUDIO_ANALYSIS first for existing clients, then emit standardized events."""
+    await manager.broadcast(call_id, analysis)
+    data = analysis.get("data") or {}
+    anti = (data.get("voice_authenticity") or {}).get("anti_spoof") or {}
+    ecapa = data.get("speaker_verification") or data.get("speaker") or {}
+    await manager.broadcast(call_id, ws_event("AUDIO_STATUS", call_id, {
+        "speech_detected": data.get("speech_detected"),
+        "sample_rate": 16000,
+        "window_count": analysis.get("window_count"),
+        "continuous_duration": analysis.get("continuous_duration"),
+        "vad": data.get("vad"),
+        "audio": data.get("audio"),
+        "microphone_connected": True,
+    }))
+    await manager.broadcast(call_id, ws_event("AASIST_UPDATE", call_id, anti))
+    await manager.broadcast(call_id, ws_event("ECAPA_UPDATE", call_id, ecapa))
+    await manager.broadcast(call_id, ws_event("PROSODY_UPDATE", call_id, data.get("prosody") or {}))
+    fused = data.get("fused_trust") or data.get("preliminary_trust") or {}
+    await manager.broadcast(call_id, ws_event("TRUST_UPDATE", call_id, fused))
+
+
+async def _run_semantic_pipeline(call_id: str) -> None:
+    buf = stream_processor.call_buffers.get(call_id)
+    if not buf or getattr(buf, "whisper_busy", False):
+        return
+    buf.whisper_busy = True
+    try:
+        transcript = await asyncio.to_thread(stream_processor.run_incremental_asr, call_id)
+        if transcript:
+            logger.info(f"[TRANSCRIPT_UPDATE_SENT] call_id={call_id} text=\"{transcript.get('text')}\"")
+            await manager.broadcast(call_id, ws_event(
+                "TRANSCRIPT_UPDATE",
+                call_id,
+                transcript,
+                text=transcript.get("text"),
+                full_text=transcript.get("full_text"),
+                engine="whisper"
+            ))
+            gemini = await asyncio.to_thread(
+                stream_processor.run_conversation_update,
+                call_id,
+                transcript.get("full_text") or "",
+            )
+            if gemini:
+                logger.info(f"[GEMINI_UPDATE_SENT] call_id={call_id} engine={gemini.get('engine')} risk={gemini.get('risk_score')}")
+                await manager.broadcast(call_id, ws_event(
+                    "GEMINI_UPDATE",
+                    call_id,
+                    gemini,
+                    engine=gemini.get("engine")
+                ))
+            last = buf.last_analysis or {}
+            data = last.get("data") or {}
+            fused = live_semantics.fuse_trust(
+                buf,
+                aasist=(data.get("voice_authenticity") or {}).get("anti_spoof") or {},
+                ecapa=data.get("speaker_verification") or {},
+                prosody=data.get("prosody") or {},
+                speech_detected=bool(data.get("speech_detected")),
+            )
+            await manager.broadcast(call_id, ws_event("TRUST_UPDATE", call_id, fused))
+            incidents = await asyncio.to_thread(stream_processor.maybe_incidents, call_id)
+            for inc in incidents:
+                await manager.broadcast(call_id, ws_event("INCIDENT_CREATED", call_id, inc))
+            await asyncio.to_thread(stream_processor.persist_semantics, call_id)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        await manager.broadcast(call_id, ws_event("ERROR", call_id, {
+            "status": "SEMANTIC_PIPELINE_ERROR",
+            "message": "Whisper/Gemini pipeline failed; acoustic analysis continues.",
+        }))
+    finally:
+        if buf:
+            buf.whisper_busy = False
+
+
+@app.post("/api/live/dump_buffer/{call_id}")
+async def dump_live_buffer_endpoint(call_id: str):
+    """Development-only endpoint to dump the active 16kHz audio buffer as a WAV file for inspection."""
+    import tempfile
+    out_dir = os.path.join(tempfile.gettempdir(), "voxguard_dumps")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"{call_id}.wav")
+    try:
+        path = stream_processor.dump_buffer_wav(call_id, out_path)
+        return {"status": "OK", "call_id": call_id, "wav_path": path}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.websocket("/ws/call/{call_id}")
 async def websocket_call_endpoint(websocket: WebSocket, call_id: str):
     await manager.connect(call_id, websocket)
     try:
-        # Send initial confirmation
         await websocket.send_json({
             "type": "CONNECTION_ESTABLISHED",
             "call_id": call_id,
+            "session_id": call_id,
             "status": "STREAM_ACTIVE",
             "timestamp": time.strftime("%H:%M:%S", time.gmtime())
         })
         while True:
-            # Handle both text control frames and raw binary PCM16 audio
             message = await websocket.receive()
             msg_type = message.get("type")
 
             if msg_type == "websocket.disconnect":
                 break
 
-            # 1. Binary Audio Frame (PCM16)
             if "bytes" in message and message["bytes"]:
                 raw_bytes = message["bytes"]
                 analysis = stream_processor.process_chunk(call_id, raw_bytes)
                 if analysis:
-                    await manager.broadcast(call_id, analysis)
+                    await _broadcast_live_events(call_id, analysis)
+                    asyncio.create_task(_run_semantic_pipeline(call_id))
 
-            # 2. Text / JSON Control Frame
             elif "text" in message and message["text"]:
                 data = message["text"]
                 try:
@@ -311,6 +419,13 @@ async def websocket_call_endpoint(websocket: WebSocket, call_id: str):
                         "claimed_speaker_id": claimed_speaker_id,
                         "window_seconds": 3.0
                     })
+                    await websocket.send_json(ws_event("SESSION_STARTED", call_id, {
+                        "source": "REAL",
+                        "status": "LIVE",
+                        "sample_rate": sample_rate,
+                        "channels": channels,
+                        "claimed_speaker_id": claimed_speaker_id,
+                    }))
 
                 elif action == "SET_CLAIMED_SPEAKER":
                     claimed_speaker_id = payload.get("claimed_speaker_id", "cfo_arun")
@@ -320,6 +435,14 @@ async def websocket_call_endpoint(websocket: WebSocket, call_id: str):
                         "call_id": call_id,
                         "claimed_speaker_id": claimed_speaker_id
                     })
+
+                elif action == "SET_CONTEXT":
+                    ctx = stream_processor.apply_context(
+                        call_id,
+                        payload.get("data") or payload,
+                        source=payload.get("source", "DEMO_CONTEXT"),
+                    )
+                    await manager.broadcast(call_id, ws_event("CONTEXT_UPDATE", call_id, ctx))
 
                 elif action == "STOP_AUDIO_STREAM":
                     summary = stream_processor.stop_call_stream(call_id)
@@ -334,6 +457,7 @@ async def websocket_call_endpoint(websocket: WebSocket, call_id: str):
                             "call_id": call_id,
                             "summary": summary
                         })
+                        await websocket.send_json(ws_event("SESSION_FINALIZED", call_id, summary or {}))
                     except Exception:
                         pass
 
@@ -350,6 +474,7 @@ async def websocket_call_endpoint(websocket: WebSocket, call_id: str):
                         await manager.broadcast(call_id, {
                             "type": "TRUST_UPDATE",
                             "call_id": call_id,
+                            "mode": "DEMO",
                             "data": step
                         })
                         await asyncio.sleep(1.5)
@@ -373,13 +498,12 @@ async def websocket_call_endpoint(websocket: WebSocket, call_id: str):
     except WebSocketDisconnect:
         pass
     except RuntimeError as e:
-        # Ignore close race condition: "Cannot call send once close message has been sent"
         if "Cannot call" in str(e) or "close message has been sent" in str(e):
             pass
         else:
             import traceback
             traceback.print_exc()
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
     finally:

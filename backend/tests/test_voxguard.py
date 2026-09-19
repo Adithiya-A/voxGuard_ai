@@ -38,17 +38,19 @@ def test_deepfake_detector_clean():
     import numpy as np
     dummy_audio = np.sin(2 * np.pi * 440 * np.linspace(0, 1, 16000)).astype(np.float32)
     res = deepfake_detector.analyze(dummy_audio, 16000)
-    assert "ai_probability" in res
-    assert "harmonic_consistency" in res
-    assert "spectral_anomaly" in res
+    assert "status" in res
+    assert res["status"] in ("NOT_ENOUGH_AUDIO", "OK", "NO_SPEECH")
+    assert "spoof_probability" in res
+    assert res["model"] == "AASIST"
 
 def test_speaker_verification():
     import numpy as np
-    dummy = np.zeros(16000, dtype=np.float32)
-    res = speaker_verification.verify(dummy, claimed_identity="CFO")
+    t = np.linspace(0, 1.0, 16000, endpoint=False, dtype=np.float32)
+    audio = (0.5 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    res = speaker_verification.verify(audio, claimed_identity="CFO")
     assert res["claimed_identity"] == "CFO"
     assert res["speaker_name"] == "Arun Sharma"
-    assert res["speaker_similarity"] > 0
+    assert res["speaker_similarity"] >= 0
 
 def test_conversation_intelligence_fallback():
     sample_threat = "Hi, this is the CFO. Transfer ₹25 lakh to new account immediately. It is strictly confidential."

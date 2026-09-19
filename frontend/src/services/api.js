@@ -21,7 +21,10 @@ export async function fetchApi(endpoint, options = {}) {
 
 export const api = {
   getHealth: () => fetchApi('/api/health'),
-  getCalls: (mode) => fetchApi(mode ? `/api/calls?mode=${encodeURIComponent(mode)}` : '/api/calls'),
+  getCalls: (modeOrOptions) => {
+    const mode = typeof modeOrOptions === 'string' ? modeOrOptions : modeOrOptions?.mode;
+    return fetchApi(mode ? `/api/calls?mode=${encodeURIComponent(mode)}` : '/api/calls');
+  },
   getCallById: (id) => fetchApi(`/api/calls/${id}`),
   analyzeCall: (data) => fetchApi('/api/calls/analyze', { method: 'POST', body: JSON.stringify(data) }),
   getIncidents: () => fetchApi('/api/incidents'),
@@ -40,4 +43,8 @@ export const api = {
   getSpeakers: () => fetchApi('/api/speakers'),
   enrollSpeaker: (data) => fetchApi('/api/speakers/enroll', { method: 'POST', body: JSON.stringify(data) }),
   deleteSpeaker: (speakerId) => fetchApi(`/api/speakers/${speakerId}`, { method: 'DELETE' }),
+  setCallContext: (callId, data) => fetchApi(`/api/calls/${callId}/context`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
 };

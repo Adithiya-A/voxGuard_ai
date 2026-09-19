@@ -93,6 +93,7 @@ Return ONLY valid JSON:
 recommended_action must be one of: ALLOW, WARN, MFA, INDEPENDENT_CALLBACK, MONITOR.
 Never output BLOCK. Never claim the voice is synthetic.
 """
+            logger.info(f"[GEMINI_REQUEST] model={self.model_name} chars={len(transcript)} text=\"{transcript}\"")
             response = client.models.generate_content(
                 model=self.model_name,
                 contents=prompt,
@@ -108,9 +109,16 @@ Never output BLOCK. Never claim the voice is synthetic.
             if action in ("BLOCK", "BLOCK_TRANSACTION"):
                 action = "MFA"
             signals = list(data.get("manipulation_indicators") or [])
+            intent = data.get("intent") or ""
+
+            logger.info(
+                f"[GEMINI_RESULT] engine={self.model_name} risk={risk} "
+                f"action={action} intent=\"{intent}\""
+            )
+
             return {
                 "risk_score": risk,
-                "intent": data.get("intent") or "",
+                "intent": intent,
                 "social_engineering": bool(data.get("social_engineering")),
                 "authority_impersonation": bool(data.get("authority_impersonation")),
                 "financial_request": bool(data.get("financial_request")),
@@ -124,7 +132,7 @@ Never output BLOCK. Never claim the voice is synthetic.
                 "social_engineering_risk": risk,
                 "detected_signals": signals,
                 "summary": data.get("reasoning") or data.get("summary") or "",
-                "engine": f"Gemini ({self.model_name})",
+                "engine": self.model_name,
                 "status": "OK",
                 "available": True,
             }
@@ -133,7 +141,11 @@ Never output BLOCK. Never claim the voice is synthetic.
             fallback = self._analyze_heuristic(transcript)
             fallback["status"] = "GEMINI_UNAVAILABLE"
             fallback["gemini_error"] = str(e)
-            fallback["engine"] = "VoxGuard Heuristic NLP Engine (Gemini unavailable)"
+            fallback["engine"] = "heuristic"
+            logger.info(
+                f"[GEMINI_RESULT] engine=heuristic (fallback) risk={fallback.get('risk_score')} "
+                f"action={fallback.get('recommended_action')}"
+            )
             return fallback
 
     def _analyze_heuristic(self, transcript: str) -> Dict[str, Any]:
@@ -213,7 +225,7 @@ Never output BLOCK. Never claim the voice is synthetic.
             "social_engineering_risk": risk,
             "detected_signals": signals,
             "summary": summary,
-            "engine": "VoxGuard Heuristic NLP Engine (Rule-based Fallback)",
+            "engine": "heuristic",
             "status": "OK" if not self.api_key else "OK",
             "available": True,
         }

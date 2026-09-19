@@ -258,6 +258,8 @@ class TestPhase3SpeakerBiometrics(unittest.TestCase):
             started_msg = ws.receive_json()
             self.assertEqual(started_msg["type"], "AUDIO_STREAM_STARTED")
             self.assertEqual(started_msg["claimed_speaker_id"], "cfo_arun")
+            sess_msg = ws.receive_json()
+            self.assertEqual(sess_msg["type"], "SESSION_STARTED")
 
             # Send 1.5 seconds of PCM16 audio
             pcm_bytes = (self.audio_speaker_a[:24000] * 32767).astype(np.int16).tobytes()
@@ -272,7 +274,13 @@ class TestPhase3SpeakerBiometrics(unittest.TestCase):
 
             # Stop audio stream
             ws.send_json({"type": "STOP_AUDIO_STREAM"})
-            stopped_msg = ws.receive_json()
+            stopped_msg = None
+            for _ in range(10):
+                msg = ws.receive_json()
+                if msg.get("type") == "AUDIO_STREAM_STOPPED":
+                    stopped_msg = msg
+                    break
+            self.assertIsNotNone(stopped_msg)
             self.assertEqual(stopped_msg["type"], "AUDIO_STREAM_STOPPED")
 
     # 18. AASIST + ECAPA Telemetry Coexistence

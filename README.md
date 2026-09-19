@@ -1,257 +1,246 @@
 # VoxGuard AI — Real-Time Voice Trust & Defense Platform
 
-> **Trust Every Voice.**
-> Real-Time Detection and Prevention of Voice Cloning Impersonation Attacks
-> Smart India Hackathon (SIH) Working Prototype
+> **Trust Every Voice.**  
+> Real-Time Detection and Prevention of Voice Cloning Impersonation Attacks  
+> **Team:** Ratchagan | **Problem Statement:** SIH26104 | **Smart India Hackathon (SIH) 2026**
 
 ---
 
-## 1. Problem Statement
+## 1. Executive Summary & Problem Statement
 
-Generative AI speech synthesis and diffusion vocoders (ElevenLabs, WaveNet, VALL-E, HiFi-GAN) can now clone an executive's voice from less than 3 seconds of reference audio with indistinguishable timbre. 
+Generative AI speech synthesis, neural vocoders, and diffusion-based voice cloning models (e.g., ElevenLabs, VALL-E, HiFi-GAN, OpenVoice) can now clone an executive's voice from less than 3 seconds of audio with near-indistinguishable timbre.
 
-Traditional telephony security relies either on:
-1. **Biometric Speaker Verification alone**: A fatal flaw, because an AI voice clone of the CFO will match the CFO's enrolled biometric profile, granting unauthorized access.
-2. **Post-call forensic analysis**: Too late to prevent immediate wire fraud, high-value RTGS transfers, or credential compromise.
+Traditional enterprise security models fail under these attacks because:
+1. **Biometric Speaker Verification alone fails**: An AI voice clone of a CFO will match the CFO's enrolled biometric profile, resulting in false authorization.
+2. **Post-call forensic analysis is too late**: Wire transfers, high-value RTGS settlements, and credential handoffs happen during the active call.
 
-Organizations need a **real-time voice trust layer** that operates during live ingress calls, continuously analyzes spectral and semantic indicators, and autonomously prevents fraudulent capital movement.
+VoxGuard AI provides a **real-time voice defense pipeline** that operates during live calls, simultaneously analyzes spectral, acoustic, biometric, and conversational indicators, and deterministically halts unauthorized transactions before capital moves.
 
 ---
 
-## 2. The VoxGuard Solution
-
-VoxGuard AI doesn't just ask whether a voice sounds real — it determines whether the **entire conversation can be trusted**.
+## 2. Multi-Signal Detection Architecture
 
 ```text
-Voice Authenticity (30%)
-+
-Speaker Identity (18%)
-+
-Prosodic Stress & Dynamics (10%)
-+
-Conversation Intelligence & Intent (20%)
-+
-Caller Trunk Provenance (7%)
-+
-Transaction Risk & Beneficiary Exposure (15%)
-==============================================
-Dynamic Trust Score (0 – 100)
-       ↓
-Autonomous Security Decision:
-ALLOW  |  WARN  |  SECONDARY MFA  |  BLOCK TRANSACTION
-       ↓
-Cryptographic SHA-256 Audit Attestation
-```
-
-### Critical Differentiator: The Voice Clone Paradox
-When **Speaker Similarity is HIGH (e.g. 94.2% match against the CFO)** but **Voice Authenticity is LOW (e.g. 87% AI probability)**, traditional speaker verification fails. VoxGuard flags this exact divergence as a weaponized AI clone attack and immediately cuts telephony ingress.
-
----
-
-## 3. Architecture
-
-```mermaid
-flowchart TD
-    A[Live Telephony / VoIP Ingress] --> B[Audio Preprocessor 16kHz Mono]
-    B --> C[Voice Activity Detection VAD]
-    
-    subgraph Multi-Signal Analysis Pipeline
-        C --> D1[Pretrained AASIST Anti-Spoofing Model]
-        C --> D2[Speaker Biometrics ECAPA-TDNN]
-        C --> D3[Prosody Analyzer Pitch & Jitter]
-        C --> D4[Streaming Whisper STT]
-        D4 --> D5[Conversation NLP Gemini / Heuristic]
-        A --> D6[Caller Trunk Provenance & Transaction Context]
-    end
-
-    D1 --> E[Deterministic Trust Engine]
-    D2 --> E
-    D3 --> E
-    D5 --> E
-    D6 --> E
-
-    E --> F{Dynamic Trust Score}
-    F -->|90-100| G[ALLOW / Safe]
-    F -->|60-89| H[WARN / Advisory Alert]
-    F -->|30-59| I[REQUIRE OUT-OF-BAND MFA]
-    F -->|< 30| J[AUTONOMOUS BLOCK & DISCONNECT]
-
-    F --> K[SHA-256 Immutable Audit Ledger]
-    K --> L[Polygon Testnet Proof]
-    
-    E --> M[WebSocket Live Stream]
-    M --> N[Stitch SOC Console UI]
+Browser Microphone / Real Audio
+        ↓
+WebSocket Audio Gateway (PCM16 16kHz)
+        ↓
+VAD + Audio Preprocessing (Anti-Aliasing, Normalization, Diagnostics)
+        ↓
+ ┌───────────────┬────────────────┬────────────────┐
+ ↓               ↓                ↓
+AASIST          ECAPA-TDNN       Prosody Analysis
+Anti-Spoof      Speaker          Acoustic /
+Detection       Verification     Behavioral Dynamics
+ └───────────────┴────────────────┘
+                 ↓
+          Whisper ASR (faster-whisper)
+                 ↓
+        Live Transcript Stream
+                 ↓
+        Gemini Intelligence (Google GenAI)
+                 ↓
+ Conversation / Social Engineering Analysis
+                 ↓
+ Caller Context + Transaction Context API
+                 ↓
+          TRUST ENGINE
+                 ↓
+        Trust Score: 0 – 100
+                 ↓
+  ALLOW / WARN / MFA / CALLBACK / BLOCK
+                 ↓
+         Security Incidents
+                 ↓
+      SQLite + Firebase Sync
+                 ↓
+       React SOC Command Center
 ```
 
 ---
 
-## 4. Tech Stack
+## 3. Dedicated Responsibilities of Each Component
 
-- **Frontend**: React 19, Vite, Tailwind CSS (Stitch Theme Tokens), Lucide React, Google Material Symbols Outlined, Recharts, HTML5 Audio Spectrogram Canvas, WebSocket Client.
-- **Backend**: Python 3.10+, FastAPI, Uvicorn, WebSockets, Pydantic, NumPy, SciPy, PyTorch (`torch>=2.0.0`), SpeechBrain (`speechbrain>=1.0.0`), Google GenAI SDK.
-- **AI & Forensics**:
-  - *Pretrained Audio Anti-Spoofing (Phase 2)*: AASIST (Audio Anti-Spoofing using Integrated Spectro-Temporal Graph Attention Networks, NAVER Corp / Jung et al.), 85,306 parameters, trained on ASVspoof 2019 Logical Access (LA) evaluation benchmark. Raw 16kHz waveform input processed via SincNet filterbank and heterogeneous graph attention modules.
-  - *Pretrained Speaker Biometrics (Phase 3)*: ECAPA-TDNN (Emphasized Channel Attention, Propagation and Aggregation in TDNN, SpeechBrain / Desplanques et al.), trained on VoxCeleb 1 + VoxCeleb 2 datasets. Generates normalized 192-dimensional speaker embeddings compared via cosine similarity against enrolled executive voiceprint profiles.
-  - *Conversational Semantics*: Google Gemini Flash NLP + Rule-based Social Engineering Heuristics.
-  - *Audit Verification*: SHA-256 Digest Anchoring with Local Merkle Attestation & Polygon Testnet Contract Interface.
+The architecture strictly distinguishes each model's role:
 
----
-
-## 5. Directory Structure
-
-```text
-VoxGuard AI/
-├── backend/
-│   ├── api/
-│   │   ├── calls.py          # Call lifecycle & stream analysis
-│   │   ├── incidents.py      # Incident response & mitigation triggers
-│   │   ├── analytics.py      # SOC benchmark metrics
-│   │   ├── audit.py          # Cryptographic log verification
-│   │   ├── demo.py           # SIH Attack Simulator scenarios
-│   │   └── settings.py       # Trust weights & policy matrix
-│   ├── audio/
-│   │   ├── preprocessing.py  # 16kHz mono conversion & chunking
-│   │   ├── stream_processor.py # Rolling 3s window audio analysis & dispatcher
-│   │   └── vad.py            # Short-Time Energy VAD
-│   ├── models/
-│   │   ├── deepfake_detector.py # Pretrained AASIST deepfake detection wrapper
-│   │   ├── aasist_arch.py    # AASIST neural network architecture (NAVER Corp)
-│   │   ├── speaker_verifier.py  # Pretrained ECAPA-TDNN speaker verification (SpeechBrain)
-│   │   ├── speaker_verification.py # Backward-compatible bridge layer
-│   │   ├── weights/
-│   │   │   ├── AASIST.pth    # Pretrained AASIST checkpoint (1.28 MB)
-│   │   │   └── ecapa_voxceleb/ # Pretrained SpeechBrain ECAPA checkpoint weights
-│   │   ├── prosody.py        # Coercive stress & jitter dynamics
-│   │   └── transcription.py  # Streaming transcript service
-│   ├── intelligence/
-│   │   ├── conversation.py   # Gemini NLP & heuristic fallback
-│   │   └── context.py        # Caller provenance & transaction risk
-│   ├── trust/
-│   │   ├── scoring.py        # 6-signal weighted Trust Engine
-│   │   └── rules.py          # Autonomous mitigation policies
-│   ├── blockchain/
-│   │   └── audit.py          # SHA-256 ledger attestation
-│   ├── tests/
-│   │   ├── test_phase1_audio.py      # Audio pipeline & VAD unit tests
-│   │   ├── test_phase2_deepfake.py   # AASIST anti-spoofing unit tests
-│   │   ├── test_phase3_speaker.py    # ECAPA-TDNN speaker biometric unit tests
-│   │   └── test_realtime_data_flow.py # WebSocket data flow & isolation tests
-│   ├── main.py               # FastAPI application & WebSocket server
-│   ├── config.py             # App configuration
-│   └── requirements.txt
-│
-├── frontend/
-│   ├── src/
-│   │   ├── components/       # Layout, TrustGauge, Spectrogram, Modals
-│   │   ├── pages/            # 10 Stitch-Aligned React Pages
-│   │   ├── services/         # REST & WebSocket API clients
-│   │   ├── context/          # Global SOC state management
-│   │   ├── App.jsx           # React Router v6 setup
-│   │   └── index.css         # Cyber SOC theme & glassmorphism
-│   ├── index.html            # Geist, Inter, JetBrains Mono fonts
-│   ├── tailwind.config.js    # Stitch design tokens
-│   └── package.json
-└── README.md
-```
+| Component | Responsibility | Does NOT Do |
+| :--- | :--- | :--- |
+| **AASIST** | Detects synthetic speech, vocoder artifacts, and replay attacks using Spectro-Temporal Graph Attention Networks. Output: `BONAFIDE` or `SPOOF`. | Does NOT verify identity or analyze words spoken. |
+| **ECAPA-TDNN** | Verifies speaker identity against enrolled 192-d voiceprint embeddings using cosine similarity. Output: `MATCH` or `MISMATCH`. | Does NOT detect deepfakes or synthetic artifacts. |
+| **Prosody Analyzer** | DSP pitch tracking (F0), pitch variance, frame energy, syllabic speech rate, pause ratios, jitter, and shimmer. | Does NOT perform NLP or transcription. |
+| **Whisper ASR** | Converts speech to text using `faster-whisper` on 16kHz speech windows. | Does NOT detect synthetic voices or assess risk. |
+| **Gemini Intelligence** | Evaluates conversation transcripts for social engineering, urgency, financial requests, credential phishing, and coercion. | **MUST NOT** be used to detect voice cloning. |
+| **Trust Engine** | Deterministic multi-signal fusion weighted according to security policies. | Does NOT generate random scores; smoothing is deterministic. |
+| **WebSocket Gateway** | Primary real-time transport for binary PCM streaming and live JSON telemetry events. | |
+| **SQLite Ledger** | Local forensic persistence for calls, timeline events, incidents, and enrolled speaker embeddings. | |
+| **Firebase Sync** | Cloud database synchronization when credentials are provided; falls back gracefully when unconfigured. | |
 
 ---
 
-## 6. Installation & Setup
+## 4. The Voice Clone Paradox
+
+The core security differentiator of VoxGuard AI is resolving the **Voice Clone Paradox**:
+
+$$\text{Voice Clone Paradox} \iff (\text{AASIST} = \text{SPOOF}) \land (\text{ECAPA} = \text{MATCH})$$
+
+- When an imposter speaks: AASIST = BONAFIDE, ECAPA = MISMATCH &rarr; Standard alert.
+- When an executive speaks: AASIST = BONAFIDE, ECAPA = MATCH &rarr; Call permitted (`ALLOW`).
+- When a cloned voice speaks: **AASIST = SPOOF and ECAPA = MATCH** &rarr; **CRITICAL THREAT: VOICE CLONE IMPERSONATION DETECTED**.
+
+When triggered:
+- `possible_voice_clone = True`
+- `risk_level = "CRITICAL"`
+- `recommended_action = "BLOCK"`
+- Trust score is deterministically capped ($\le 9/100$)
+- An immutable security incident is recorded and broadcast immediately.
+
+Neither `INCONCLUSIVE` nor insufficient audio duration will ever trigger this paradox or cause false blocks.
+
+---
+
+## 5. Technology Stack
+
+- **Backend**: Python 3.10+, FastAPI, Uvicorn, WebSockets, PyTorch (`torch>=2.0.0`), SpeechBrain (`speechbrain>=1.0.0`), `faster-whisper`, `google-genai`, `soundfile`, `scipy`, `numpy`, `firebase-admin`, `sqlite3`.
+- **Frontend**: React 18, Vite, Tailwind CSS, Lucide React, Google Material Symbols Outlined, Recharts, HTML5 AudioContext, WebSockets.
+- **Model Checkpoints**:
+  - `AASIST.pth`: Pretrained on ASVspoof 2019 Logical Access (LA) benchmark.
+  - `speechbrain/spkrec-ecapa-voxceleb`: Pretrained on VoxCeleb 1 & 2 (192-dimensional embeddings).
+  - `Systran/faster-whisper-base`: Pretrained Whisper ASR engine.
+
+---
+
+## 6. Project Setup & Execution
 
 ### Prerequisites
-- Python 3.10+
-- Node.js v18+ & npm
+- Python 3.10+ (tested on Python 3.14)
+- Node.js 18+ (tested on Node.js v22)
+- Git
 
 ### Backend Setup
-```bash
-# From workspace root
-pip install -r backend/requirements.txt
-
-# (Optional) Set your Gemini API key in backend/.env
-# GEMINI_API_KEY=your_key_here
-```
+1. Create and activate a Python virtual environment (optional but recommended):
+   ```bash
+   python -m venv venv
+   # Windows:
+   .\venv\Scripts\activate
+   # Linux/macOS:
+   source venv/bin/activate
+   ```
+2. Install dependencies:
+   ```bash
+   pip install -r backend/requirements.txt
+   pip install pytest pytest-asyncio
+   ```
+3. Configure environment variables (optional):
+   Create `backend/.env` based on `backend/.env.example`:
+   ```env
+   GEMINI_API_KEY=your_gemini_api_key_here
+   GEMINI_MODEL=gemini-2.5-flash
+   WHISPER_MODEL=base
+   DATABASE_URL=sqlite:///backend/data/voxguard.db
+   ```
+4. Start the FastAPI backend server:
+   ```bash
+   python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+   ```
+   - Health check: `http://127.0.0.1:8000/api/health`
+   - Interactive Swagger API docs: `http://127.0.0.1:8000/docs`
 
 ### Frontend Setup
+1. Navigate to frontend directory and install dependencies:
+   ```bash
+   cd frontend
+   npm install
+   ```
+2. Start the Vite development server:
+   ```bash
+   npm run dev -- --host 127.0.0.1 --port 5173
+   ```
+3. Open `http://127.0.0.1:5173` in your browser.
+
+---
+
+## 7. SIH Demonstration Workflow
+
+Follow this sequence for an end-to-end demonstration:
+
+1. **Step 1: Dashboard (`/`)**:
+   - Check real-time engine health indicators (AASIST, ECAPA-TDNN, Prosody, Whisper, Gemini, Trust Engine).
+2. **Step 2: Speaker Enrollment (`/enrollment`)**:
+   - Enroll an authorized voiceprint (e.g., `cfo_arun` or upload audio / record voice).
+   - Generates a real 192-d normalized ECAPA embedding stored in SQLite. Raw audio is discarded.
+3. **Step 3: Start Live Call (`/live`)**:
+   - Select the enrolled identity.
+   - Click **Start Live Microphone**.
+   - Speak naturally into the browser microphone for 10–20 seconds.
+   - Observe live telemetry updates:
+     - Audio RMS, spectral centroid, zero-crossing rate.
+     - AASIST anti-spoof gauge (BONAFIDE).
+     - ECAPA similarity percentage.
+     - Prosody pitch tracking (F0) and cadence.
+     - Real-time Whisper speech-to-text transcript.
+     - Gemini intent analysis.
+     - Dynamic Trust Score with factor breakdown.
+4. **Step 4: Demonstrate Social Engineering Detection**:
+   - Speak suspicious phrases ("*Please transfer ₹25,00,000 immediately, keep this strictly confidential*").
+   - Observe Gemini flag financial urgency and confidentiality pressure, lowering Trust Score and triggering an MFA alert.
+5. **Step 5: Attack Simulator (`/simulator`)**:
+   - Switch to the Attack Simulator for controlled SIH threat scenarios:
+     - **Voice Clone Paradox Attack**: High ECAPA similarity + High AASIST Spoof &rarr; Autonomous `BLOCK_TRANSACTION`.
+     - **IT Helpdesk Impersonation**: Social engineering credential phishing.
+   - Clearly labelled as `[DEMO / SIMULATION]` to maintain isolation from live microphone captures.
+6. **Step 6: Stop Call & Review Forensic Archive (`/call-history` & `/investigation`)**:
+   - Stop the live call. Session finalizes and persists to SQLite.
+   - Open **Call History** to view separate `REAL` and `DEMO` records.
+   - Open **Investigation** to inspect the complete forensic timeline, model outputs, and evidence artifacts.
+7. **Step 7: Backend Restart Verification**:
+   - Restart the backend server.
+   - Verify that all enrolled speakers and completed calls persist intact.
+
+---
+
+## 8. Test Execution & Verification
+
+Run the complete backend test suite:
+```bash
+python -m pytest -v
+```
+To run the comprehensive end-to-end verification suite:
+```bash
+python -m pytest backend/tests/test_end_to_end_verification.py -v
+```
+
+All 108 automated tests pass across:
+- Audio preprocessing, DSP VAD, and spectral diagnostics.
+- AASIST neural net inference and inconclusive state handling.
+- ECAPA-TDNN 192-d embedding extraction and cosine similarity verification.
+- Autocorrelation prosody intonation and jitter/shimmer analysis.
+- faster-whisper real-time transcription.
+- Gemini semantic risk classification and heuristic fallback.
+- Deterministic Trust Engine multi-signal fusion.
+- Voice Clone Paradox condition enforcement.
+- Incident creation and SQLite persistence across simulated restarts.
+- WebSocket binary audio streaming and event contracts.
+
+Build verification for frontend:
 ```bash
 cd frontend
-npm install
+npm run build
 ```
+Production bundle compiles cleanly with 0 errors.
 
 ---
 
-## 7. Running the Application
+## 9. Important Architecture & Security Scope Notes
 
-### Step 1: Start Backend
-```bash
-python -m uvicorn backend.main:app --port 8000 --reload
-```
-API Documentation available at: `http://localhost:8000/docs`  
-Health status: `http://localhost:8000/api/health`
-
-### Step 2: Start Frontend
-```bash
-cd frontend
-npm run dev
-```
-Open browser at: `http://localhost:5173`
-
----
-
-## 8. Smart India Hackathon (SIH) Demonstration Guide
-
-To demonstrate the full end-to-end capabilities for judges, follow this 12-step script:
-
-1. **Enterprise Zero-Trust Login (`/login`)**:
-   - Show the FIDO2/WebAuthn hardware key biometric gateway.
-   - Click **Authenticate & Enter SOC** to enter the command console.
-
-2. **Security Overview Dashboard (`/dashboard`)**:
-   - Highlight the 4 KPI cards: 3 Active Streams, 1,284 Calls Attested, 14 Threats Mitigated, ₹1.42 Cr Protected.
-   - Point out the active defense enclave health indicators (All engines online).
-
-3. **Attack Simulator Sandbox (`/demo`)**:
-   - Review the three pre-configured SIH scenarios:
-     - **Scenario 1**: Genuine CFO Call (Safe, Trust: 94)
-     - **Scenario 2**: AI Voice Clone Impersonation (Flagship Attack, Trust: 82 → 09)
-     - **Scenario 3**: IT Helpdesk SIM-Swap (Social Engineering, Trust: 34)
-   - Click **Transfer to Live Call SOC View** or **Play Simulation**.
-
-4. **Live Call Continuous Threat Monitoring (`/live-call`)**:
-   - Watch the active session `VS-2026-00081`.
-   - Click **Run Attack Simulation (00:00 → 00:21)**:
-     - `00:00` Call Connected &rarr; Trust Score: 82
-     - `00:05` Speaker recognized as CFO (94.2% Similarity) &rarr; Trust Score: 80
-     - `00:09` Synthetic voice detected (87% AI probability, phase discontinuity) &rarr; Trust Score: 62
-     - `00:14` Financial transfer request detected ("₹25,00,000 immediately") &rarr; Trust Score: 41
-     - `00:18` New unverified beneficiary flagged &rarr; Trust Score: 28
-     - `00:21` **CRITICAL SECURITY ALERT** &rarr; Trust Score: 09 &rarr; **TRANSACTION BLOCKED**
-   - Emphasize the **Security Paradox**: Speaker Similarity is high, yet Voice Authenticity is low!
-
-5. **Threat Forensic Investigation (`/investigation/VS-2026-00081`)**:
-   - Inspect acoustic spectrogram frequency ribbons, vocoder fingerprint, glottal pulse diagnostics, and the automated AI forensic explanation.
-   - Click **Export STIX 2.1 IOC** or **Download Forensic Bundle**.
-
-6. **Incident Response & Mitigation Dispatch (`/incidents`)**:
-   - Review the open triage queue (`INC-10482`).
-   - Demonstrate interactive action enforcement: Block Capital Movement, Push MFA, or Independent Callback.
-
-7. **Security Audit Logs & Cryptographic Proof (`/audit-logs`)**:
-   - View the SHA-256 immutable digest created when the transaction was blocked.
-   - Click **Verify Proof** to run an independent re-computation verifying zero tamper.
-
-8. **Security Analytics (`/analytics`) & Settings (`/settings`)**:
-   - Inspect the benchmark metrics (98.4% Precision, 142ms Latency).
-   - Adjust the multi-signal trust weights live in the Policy Matrix.
-
----
-
-## 9. Future Scope
-
-- Direct SIP PBX wiretap integrations (FreeSWITCH, Asterisk, Kamailio).
-- On-device Android / iOS WebRTC SDK for enterprise softphones.
-- Hardware-isolated HSM enclave for real-time cryptographic attestation.
+1. **Audio Ingress Source**:
+   The current working prototype captures live audio through the browser microphone via `MediaDevices.getUserMedia` and streams uncompressed 16-bit PCM via WebSocket to the backend. Standard web applications cannot directly intercept or wiretap cellular / baseband SIM calls due to operating system sandboxing. In enterprise deployments, this pipeline connects to SIP PBX trunk gateways (e.g., FreeSWITCH, Asterisk, Kamailio) or mobile softphone WebRTC endpoints.
+2. **Deterministic Security Controls**:
+   Gemini provides conversational intent analysis only; it does not authoritatively block transactions or determine whether audio is synthetically generated. Autonomous mitigation decisions are strictly executed by the deterministic Trust Engine.
+3. **Data Privacy**:
+   Voice biometrics are stored solely as mathematical 192-dimensional vector embeddings. Raw audio recordings are never permanently retained on disk.
 
 ---
 
 ## 10. License
 Developed for the Smart India Hackathon (SIH) 2026.
+All rights reserved — Team Ratchagan.

@@ -8,13 +8,40 @@ import RiskBreakdown from '../components/trust/RiskBreakdown';
 export default function Investigation() {
   const { callId } = useParams();
   const [call, setCall] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
   const [exportNotice, setExportNotice] = useState(null);
 
   useEffect(() => {
-    const id = callId || 'VS-2026-00081';
-    api.getCallById(id)
-      .then((data) => setCall(data))
-      .catch(() => {});
+    setLoading(true);
+    setNotFound(false);
+
+    if (callId) {
+      api.getCallById(callId)
+        .then((data) => {
+          setCall(data);
+          setLoading(false);
+        })
+        .catch(() => {
+          setNotFound(true);
+          setCall(null);
+          setLoading(false);
+        });
+    } else {
+      api.getCalls('REAL')
+        .then((calls) => {
+          if (Array.isArray(calls) && calls.length > 0) {
+            setCall(calls[0]);
+          } else {
+            setCall(null);
+          }
+          setLoading(false);
+        })
+        .catch(() => {
+          setCall(null);
+          setLoading(false);
+        });
+    }
   }, [callId]);
 
   const handleExportSTIX = () => {
@@ -27,10 +54,45 @@ export default function Investigation() {
     setTimeout(() => setExportNotice(null), 4000);
   };
 
+  if (loading) {
+    return (
+      <div className="p-12 text-center text-outline font-mono">
+        <div className="animate-spin w-8 h-8 border-2 border-primary-container border-t-transparent rounded-full mx-auto mb-4"></div>
+        <span>Retrieving Forensic Call Dossier...</span>
+      </div>
+    );
+  }
+
   if (!call) {
     return (
-      <div className="p-8 text-center text-outline font-mono">
-        Loading Forensic Dossier for {callId}...
+      <div className="p-12 max-w-2xl mx-auto text-center space-y-6">
+        <div className="w-16 h-16 rounded-2xl bg-surface-container border border-outline-variant/60 flex items-center justify-center mx-auto text-outline">
+          <span className="material-symbols-outlined text-3xl">search_off</span>
+        </div>
+        <div className="space-y-2">
+          <h2 className="text-xl font-bold text-on-surface">
+            {notFound ? `Call "${callId}" Not Found` : 'No Real Call Sessions Recorded Yet'}
+          </h2>
+          <p className="text-sm text-outline max-w-md mx-auto">
+            {notFound
+              ? 'The requested call identifier could not be retrieved from the forensic SQLite ledger.'
+              : 'Complete a live call using the browser microphone to view in-depth acoustic, biometric, and conversational forensic telemetry.'}
+          </p>
+        </div>
+        <div className="flex justify-center gap-4">
+          <Link
+            to="/live"
+            className="px-4 py-2 rounded-lg bg-primary-container text-on-primary-fixed font-mono text-xs font-bold hover:bg-primary transition-colors"
+          >
+            Start Live Call
+          </Link>
+          <Link
+            to="/investigation/VS-2026-00081"
+            className="px-4 py-2 rounded-lg bg-surface-container border border-outline-variant hover:border-outline text-on-surface font-mono text-xs transition-colors"
+          >
+            View Demo Scenario (VS-2026-00081)
+          </Link>
+        </div>
       </div>
     );
   }
@@ -40,8 +102,8 @@ export default function Investigation() {
   const isWarning = call.trust_score >= 30 && call.trust_score < 90;
   const isSafe = call.trust_score >= 90;
 
-  const aiProb = call.voice?.ai_probability ?? (isReal ? 5 : 87);
-  const speakerSim = call.speaker?.speaker_similarity ?? (isReal ? 92.0 : 94.2);
+  const aiProb = call.voice?.ai_probability ?? 0;
+  const speakerSim = call.speaker?.speaker_similarity ?? 0;
 
   return (
     <div className="p-6 space-y-6">
@@ -216,9 +278,13 @@ export default function Investigation() {
                     <p className="text-body-sm">{t.text}</p>
                   </div>
                 ))
+              ) : call.transcript ? (
+                <div className="p-3 rounded-lg bg-surface-container border border-outline-variant/40 text-xs font-mono text-on-surface whitespace-pre-wrap">
+                  {call.transcript}
+                </div>
               ) : (
                 <div className="p-3 rounded-lg bg-surface-container border border-outline-variant/40 text-xs font-mono text-outline">
-                  Live session captured audio streaming windows directly. Raw telephony ingress stream preserved in SQLite database.
+                  {isReal ? 'No Whisper transcript persisted for this REAL session.' : 'No transcript frames in this DEMO scenario.'}
                 </div>
               )}
             </div>
@@ -275,6 +341,25 @@ export default function Investigation() {
             </div>
           </div>
         </div>
+
+        {(call.gemini || call.conversation) && (
+          <div className="p-5 rounded-xl bg-surface-container-low/75 border border-outline-variant text-xs font-mono space-y-2">
+            <h3 className="font-bold uppercase text-primary-container">Gemini / Conversation Intelligence</h3>
+            <div>Intent: {(call.gemini || call.conversation)?.intent || 'n/a'}</div>
+            <div>Risk: {(call.gemini || call.conversation)?.risk_score ?? (call.gemini || call.conversation)?.social_engineering_risk ?? 'n/a'}</div>
+            <div>Reasoning: {(call.gemini || call.conversation)?.reasoning || (call.gemini || call.conversation)?.summary || 'n/a'}</div>
+          </div>
+        )}
+        {call.caller_context && (
+          <div className="p-5 rounded-xl bg-surface-container-low/75 border border-outline-variant text-xs font-mono">
+            Caller context ({call.caller_context.label || call.caller_context.source || 'n/a'}): {JSON.stringify(call.caller_context)}
+          </div>
+        )}
+        {call.transaction && (
+          <div className="p-5 rounded-xl bg-surface-container-low/75 border border-outline-variant text-xs font-mono">
+            Transaction context: {JSON.stringify(call.transaction)}
+          </div>
+        )}
       </div>
     </div>
   );

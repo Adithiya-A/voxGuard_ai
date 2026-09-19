@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import time
+import re
 
 from backend.trust.scoring import trust_engine
 from backend.models.deepfake_detector import deepfake_detector
@@ -193,37 +194,30 @@ class AnalyzeRequest(BaseModel):
 @router.get("")
 def list_calls(mode: Optional[str] = Query(None, description="Filter by mode: REAL, DEMO, or ALL")):
     """
-    Returns call records. Real calls are fetched from persistent SQLite database,
-    combined with demo calls. Mode filter can be REAL, DEMO, or ALL.
+    Returns call records. Real calls come from SQLite. Demo calls are isolated canned scenarios.
     """
-    real_calls_records = call_repo.list_calls(limit=100)
-    real_calls = [r.to_api_dict() for r in real_calls_records]
+    mode_filter = (mode or "ALL").strip().upper() or "ALL"
+    real_calls = [r.to_api_dict() for r in call_repo.list_calls(mode_filter="REAL", limit=100)]
 
-    # Tag demo calls if not already tagged
     demo_calls = []
     for c in CALLS_DATABASE.values():
         c_copy = dict(c)
-        if "mode" not in c_copy:
-            c_copy["mode"] = "DEMO"
+        c_copy["mode"] = "DEMO"
         demo_calls.append(c_copy)
 
-    mode_filter = (mode or "").strip().upper()
     if mode_filter == "REAL":
         return real_calls
-    elif mode_filter == "DEMO":
+    if mode_filter == "DEMO":
         return demo_calls
-    else:
-        # Default: REAL calls first (newest), followed by DEMO calls
-        # Avoid duplicate IDs
-        seen_ids = set()
-        combined = []
-        for call in real_calls:
-            seen_ids.add(call.get("call_id"))
+    seen_ids = set()
+    combined = []
+    for call in real_calls:
+        seen_ids.add(call.get("call_id"))
+        combined.append(call)
+    for call in demo_calls:
+        if call.get("call_id") not in seen_ids:
             combined.append(call)
-        for call in demo_calls:
-            if call.get("call_id") not in seen_ids:
-                combined.append(call)
-        return combined
+    return combined
 
 @router.get("/{call_id}")
 def get_call(call_id: str):
@@ -241,6 +235,43 @@ def get_call(call_id: str):
 
     raise HTTPException(status_code=404, detail=f"Call {call_id} not found")
 
+
+class CallContextRequest(BaseModel):
+    caller_number: Optional[str] = None
+    claimed_identity: Optional[str] = None
+    known_contact: Optional[bool] = None
+    contact_history: Optional[Any] = None
+    beneficiary: Optional[str] = None
+    transaction_amount: Optional[float] = None
+    transaction_currency: Optional[str] = None
+    transaction_type: Optional[str] = None
+    source: Optional[str] = "DEMO_CONTEXT"
+
+
+@router.post("/{call_id}/context")
+def set_call_context(call_id: str, req: CallContextRequest):
+    """Persist labelled caller/transaction context. Browser demos must use DEMO_CONTEXT."""
+    if not re.match(r"^[A-Za-z0-9._:-]{3,80}$", call_id):
+        raise HTTPException(status_code=400, detail="Invalid call_id")
+    source = (req.source or "DEMO_CONTEXT").strip() or "DEMO_CONTEXT"
+    if source not in ("DEMO_CONTEXT", "LIVE_CONTEXT"):
+        source = "DEMO_CONTEXT"
+    updates = (req.model_dump(exclude_none=True) if hasattr(req, "model_dump") else req.dict(exclude_none=True))
+    updates.pop("source", None)
+    from backend.audio.stream_processor import stream_processor
+    result = stream_processor.apply_context(call_id, updates, source=source)
+    try:
+        rec = call_repo.get_call(call_id)
+        if rec:
+            telemetry = rec.telemetry_summary or {}
+            telemetry["session_context"] = result.get("session")
+            telemetry["caller_context"] = result.get("caller")
+            telemetry["transaction"] = result.get("transaction")
+            call_repo.update_call_telemetry(call_id, {"telemetry_summary": telemetry})
+    except Exception:
+        pass
+    return result
+
 @router.post("/analyze")
 def analyze_call_chunk(req: AnalyzeRequest):
     """
@@ -253,24 +284,7 @@ def analyze_call_chunk(req: AnalyzeRequest):
         db_rec = call_repo.get_call(call_id)
         if db_rec:
             return db_rec.to_api_dict()
-        # Create dynamically
-        call = {
-            "call_id": call_id,
-            "mode": "REAL" if call_id.startswith("VS-LIVE-") else "DEMO",
-            "caller": "+1 (415) 890-4412 // UNKNOWN VOIP TRUNK",
-            "claimed_identity": "Arun Sharma",
-            "claimed_role": "Chief Financial Officer",
-            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "duration": "00:00",
-            "duration_seconds": 0,
-            "trust_score": 82,
-            "risk_level": "WARNING",
-            "status": "MONITORING",
-            "action": "MONITOR",
-            "transcript_history": [],
-            "timeline": []
-        }
-        CALLS_DATABASE[call_id] = call
+        raise HTTPException(status_code=404, detail=f"Call {call_id} not found")
 
     return call
 

@@ -52,12 +52,14 @@ class SpeakerVerification:
 
         profile = self.verifier.enrolled_speakers.get(key, {})
         display_name = profile.get("display_name", claimed_identity)
+        speaker_name = display_name.split(" - ")[-1].strip() if " - " in display_name else display_name
         role = profile.get("role", "Executive")
         fips = profile.get("enrolled_fips", "FIPS 140-3 #08-X99")
 
         return {
             "claimed_identity": claimed_identity,
-            "speaker_name": display_name,
+            "speaker_name": speaker_name,
+            "display_name": display_name,
             "speaker_role": role,
             "enrolled_fips": fips,
             "speaker_similarity": sim_pct,

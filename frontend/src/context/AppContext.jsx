@@ -12,7 +12,7 @@ export function AppProvider({ children }) {
     isAuthenticated: true,
   });
 
-  const [activeCallId, setActiveCallId] = useState('VS-2026-00081');
+  const [activeCallId, setActiveCallId] = useState(null);
   const [activeCallData, setActiveCallData] = useState(null);
   const [incidentsCount, setIncidentsCount] = useState(14);
   const [notifications, setNotifications] = useState([]);
@@ -20,6 +20,7 @@ export function AppProvider({ children }) {
 
   // Load initial call data
   useEffect(() => {
+    if (!activeCallId) return;
     loadCall(activeCallId);
   }, [activeCallId]);
 

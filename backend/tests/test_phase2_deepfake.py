@@ -55,7 +55,7 @@ class TestPhase2DeepfakeDetector(unittest.TestCase):
     def test_output_schema(self):
         res = deepfake_detector.analyze(self.test_audio, sample_rate=16000, speech_detected=True)
         self.assertEqual(res["status"], "OK")
-        self.assertIn(res["prediction"], ["SPOOF", "LIKELY_GENUINE"])
+        self.assertIn(res["prediction"], ["SPOOF", "BONAFIDE", "LIKELY_GENUINE"])
         self.assertIsInstance(res["spoof_probability"], float)
         self.assertIsInstance(res["genuine_probability"], float)
         self.assertGreaterEqual(res["spoof_probability"], 0.0)

@@ -16,16 +16,38 @@ export default function LiveCall() {
   const [mode, setMode] = useState('idle');
 
   // Real Microphone Live Session State (Completely isolated from mock data)
-  const [liveSession, setLiveSession] = useState({
+  const emptyLive = {
     active: false,
     callId: null,
+    source: 'REAL',
+    status: 'IDLE',
     startedAt: null,
     endedAt: null,
     duration: 0,
     windows: 0,
     speechWindows: 0,
     latestAnalysis: null,
-    history: []
+    history: [],
+    aasist: null,
+    ecapa: null,
+    prosody: null,
+    transcript: { text: '', full_text: '', language: null, status: null },
+    gemini: null,
+    context: null,
+    trust: null,
+    incidents: [],
+    sampleRate: 16000,
+  };
+
+  const [liveSession, setLiveSession] = useState(emptyLive);
+  const [completedSession, setCompletedSession] = useState(null);
+  const [demoContextDraft, setDemoContextDraft] = useState({
+    claimed_identity: '',
+    caller_number: '',
+    transaction_amount: '',
+    transaction_currency: 'INR',
+    transaction_type: 'bank_transfer',
+    beneficiary: '',
   });
 
   // Streaming Hardware States: IDLE, CONNECTING, LISTENING, ANALYZING, STOPPING, ERROR
@@ -75,6 +97,28 @@ export default function LiveCall() {
   const processorRef = useRef(null);
   const timerRef = useRef(null);
 
+  const submitDemoContext = async () => {
+    if (!liveSession.callId) return;
+    const payload = {
+      source: 'DEMO_CONTEXT',
+      claimed_identity: demoContextDraft.claimed_identity || null,
+      caller_number: demoContextDraft.caller_number || null,
+      transaction_amount: demoContextDraft.transaction_amount ? Number(demoContextDraft.transaction_amount) : null,
+      transaction_currency: demoContextDraft.transaction_currency || 'INR',
+      transaction_type: demoContextDraft.transaction_type || null,
+      beneficiary: demoContextDraft.beneficiary || null,
+    };
+    try {
+      const data = await api.setCallContext(liveSession.callId, payload);
+      setLiveSession((prev) => ({ ...prev, context: data }));
+      if (wsRef.current && wsRef.current.isOpen()) {
+        wsRef.current.sendControl({ type: 'SET_CONTEXT', source: 'DEMO_CONTEXT', data: payload });
+      }
+    } catch (e) {
+      setErrorMessage('Failed to persist DEMO_CONTEXT');
+    }
+  };
+
   const handleClaimedSpeakerChange = (newSpeakerId) => {
     setClaimedSpeaker(newSpeakerId);
     if (wsRef.current && wsRef.current.isOpen()) {
@@ -121,14 +165,13 @@ export default function LiveCall() {
     return output.buffer;
   };
 
-  // Handle incoming real-time AUDIO_ANALYSIS from WebSocket
   const handleLiveAudioAnalysis = (payload) => {
     setStreamStatus('ANALYZING');
     const data = payload.data;
     if (!data) return;
 
     const isSpeech = !!data.speech_detected;
-    const timestampStr = new Date((payload.timestamp || Date.now() / 1000) * 1000).toTimeString().split(' ')[0];
+    const timestampStr = new Date().toTimeString().split(' ')[0];
     const speechStatus = isSpeech ? 'SPEECH DETECTED' : 'SILENCE/AMBIENT';
     const pitchStr = data.prosody?.fundamental_f0_hz ? `${data.prosody.fundamental_f0_hz} Hz` : 'N/A';
     const centroidStr = data.audio?.spectral_centroid_hz ? `${data.audio.spectral_centroid_hz} Hz` : 'N/A';
@@ -143,8 +186,8 @@ export default function LiveCall() {
         spectralCentroid: data.audio?.spectral_centroid_hz ?? 0,
         spectralFlatness: data.audio?.spectral_flatness ?? 0,
         f0: data.prosody?.fundamental_f0_hz ?? null,
-        score: data.preliminary_trust?.score ?? 85,
-        riskLevel: data.preliminary_trust?.risk_level ?? 'SAFE',
+        score: data.fused_trust?.trust_score ?? data.preliminary_trust?.score ?? prev.trust?.trust_score ?? 85,
+        riskLevel: data.fused_trust?.risk_level ?? data.preliminary_trust?.risk_level ?? 'SAFE',
         latencyMs: data.latency_ms?.total || 0,
         event: `${speechStatus} | RMS: ${rmsStr} | F0: ${pitchStr} | Centroid: ${centroidStr} | Latency: ${data.latency_ms?.total || 0}ms`
       };
@@ -154,9 +197,92 @@ export default function LiveCall() {
         windows: prev.windows + 1,
         speechWindows: prev.speechWindows + (isSpeech ? 1 : 0),
         latestAnalysis: data,
+        aasist: data.voice_authenticity?.anti_spoof || prev.aasist,
+        ecapa: data.speaker_verification || prev.ecapa,
+        prosody: data.prosody || prev.prosody,
+        trust: data.fused_trust || data.preliminary_trust || prev.trust,
         history: [newHistItem, ...prev.history.slice(0, 49)]
       };
     });
+  };
+
+  const handleLiveWsMessage = (msg) => {
+    console.log('[LIVE_EVENT_RECEIVED]', { type: msg.type, call_id: msg.call_id || msg.session_id });
+    if (msg.type === 'AUDIO_ANALYSIS' && msg.data) {
+      handleLiveAudioAnalysis(msg);
+      return;
+    }
+    if (msg.type === 'AASIST_UPDATE') {
+      setLiveSession((prev) => ({ ...prev, aasist: msg.data || prev.aasist }));
+      return;
+    }
+    if (msg.type === 'ECAPA_UPDATE') {
+      setLiveSession((prev) => ({ ...prev, ecapa: msg.data || prev.ecapa }));
+      return;
+    }
+    if (msg.type === 'PROSODY_UPDATE') {
+      setLiveSession((prev) => ({ ...prev, prosody: msg.data || prev.prosody }));
+      return;
+    }
+    if (msg.type === 'TRANSCRIPT_UPDATE') {
+      const payload = msg.data || msg;
+      setLiveSession((prev) => ({
+        ...prev,
+        transcript: {
+          text: payload.text || msg.text || '',
+          full_text: payload.full_text || msg.full_text || prev.transcript?.full_text || payload.text || '',
+          language: payload.language || msg.language || prev.transcript?.language || 'en',
+          status: payload.status || msg.status || 'OK',
+          engine: payload.engine || msg.engine || 'whisper',
+        },
+      }));
+      return;
+    }
+    if (msg.type === 'GEMINI_UPDATE') {
+      const payload = msg.data || msg;
+      setLiveSession((prev) => ({ ...prev, gemini: payload }));
+      return;
+    }
+    if (msg.type === 'CONTEXT_UPDATE') {
+      setLiveSession((prev) => ({ ...prev, context: msg.data || prev.context }));
+      return;
+    }
+    if (msg.type === 'TRUST_UPDATE') {
+      setLiveSession((prev) => ({ ...prev, trust: msg.data || prev.trust }));
+      return;
+    }
+    if (msg.type === 'INCIDENT_CREATED') {
+      setLiveSession((prev) => ({
+        ...prev,
+        incidents: [msg.data, ...(prev.incidents || [])].filter(Boolean).slice(0, 20),
+      }));
+      return;
+    }
+    if (msg.type === 'SESSION_STARTED') {
+      setLiveSession((prev) => ({ ...prev, status: 'LIVE', source: 'REAL' }));
+      return;
+    }
+    if (msg.type === 'ERROR') {
+      setErrorMessage(msg.data?.message || msg.data?.status || 'Pipeline error');
+      return;
+    }
+    if (msg.type === 'AUDIO_STREAM_STOPPED' || msg.type === 'CALL_FINALIZED' || msg.type === 'SESSION_FINALIZED') {
+      const summary = msg.summary || msg.data || {};
+      setLiveSession((prev) => {
+        const finalized = {
+          ...prev,
+          active: false,
+          endedAt: Date.now(),
+          status: 'COMPLETED',
+          trust: summary.trust_score != null ? { ...prev.trust, trust_score: summary.trust_score, risk_level: summary.trust_level, recommended_action: summary.action } : prev.trust,
+        };
+        setCompletedSession(finalized);
+        try {
+          localStorage.setItem('voxguard:lastRealCall', prev.callId || '');
+        } catch {}
+        return finalized;
+      });
+    }
   };
 
   // Start Real Microphone Capture and Stream PCM16
@@ -169,16 +295,13 @@ export default function LiveCall() {
       setChunksSent(0);
 
       // Clean, fresh live session state
+      setCompletedSession(null);
       setLiveSession({
+        ...emptyLive,
         active: true,
         callId: newCallId,
+        status: 'LIVE',
         startedAt: Date.now(),
-        endedAt: null,
-        duration: 0,
-        windows: 0,
-        speechWindows: 0,
-        latestAnalysis: null,
-        history: []
       });
 
       // 1. Request microphone permission
@@ -192,6 +315,10 @@ export default function LiveCall() {
       });
       mediaStreamRef.current = stream;
 
+      const track = stream.getAudioTracks()[0];
+      const trackSettings = track ? track.getSettings() : {};
+      const trackSampleRate = trackSettings.sampleRate || null;
+
       // 2. Initialize AudioContext at 16kHz for clean browser-native downsampling
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       let audioCtx;
@@ -201,7 +328,15 @@ export default function LiveCall() {
         audioCtx = new AudioCtx();
       }
       audioContextRef.current = audioCtx;
-      const sampleRate = audioCtx.sampleRate;
+      const actualSampleRate = audioCtx.sampleRate;
+
+      console.log('[AUDIO_HARDWARE_DIAG]', {
+        requested_sample_rate: 16000,
+        actual_audio_context_sample_rate: actualSampleRate,
+        media_stream_track_sample_rate: trackSampleRate,
+        channels: 1,
+        autoGainControl: true,
+      });
 
       // 3. Clean any existing WebSocket
       if (wsRef.current) {
@@ -212,13 +347,7 @@ export default function LiveCall() {
       // 4. Connect WebSocket for THIS unique live call session
       const ws = new CallWebSocket(
         newCallId,
-        (msg) => {
-          if (msg.type === 'AUDIO_ANALYSIS' && msg.data) {
-            handleLiveAudioAnalysis(msg);
-          } else if (msg.type === 'AUDIO_STREAM_STOPPED' || msg.type === 'CALL_FINALIZED') {
-            console.log('[LIVE-DATA] Backend stream finalized summary:', msg.summary);
-          }
-        },
+        handleLiveWsMessage,
         (err) => {
           console.warn('[LIVE-DATA] WS error:', err);
           if (streamStatus !== 'IDLE') setStreamStatus('ERROR');
@@ -226,9 +355,10 @@ export default function LiveCall() {
         () => {
           // onOpen: Send START_AUDIO_STREAM control frame first
           console.log(`[LIVE-DATA] WebSocket connected for ${newCallId}. Sending START_AUDIO_STREAM.`);
+          console.log('[AUDIO_CAPTURE_STARTED]', { sampleRate: actualSampleRate, channels: 1, format: 'pcm_s16le', claimedSpeaker });
           ws.sendControl({
             type: 'START_AUDIO_STREAM',
-            sample_rate: sampleRate,
+            sample_rate: actualSampleRate,
             channels: 1,
             format: 'pcm_s16le',
             claimed_speaker_id: claimedSpeaker
@@ -241,13 +371,18 @@ export default function LiveCall() {
           const processor = audioCtx.createScriptProcessor(bufferSize, 1, 1);
           processorRef.current = processor;
 
+          let chunkCount = 0;
           processor.onaudioprocess = (e) => {
             const inputData = e.inputBuffer.getChannelData(0);
             const pcm16Buffer = floatTo16BitPCM(inputData);
 
             if (wsRef.current && wsRef.current.isOpen()) {
               wsRef.current.sendAudioChunk(pcm16Buffer);
-              setChunksSent((prev) => prev + 1);
+              chunkCount++;
+              setChunksSent(chunkCount);
+              if (chunkCount === 1 || chunkCount % 20 === 0) {
+                console.log('[AUDIO_FRAME_SENT]', { chunkIndex: chunkCount, byteLength: pcm16Buffer.byteLength });
+              }
             }
           };
 
@@ -305,7 +440,7 @@ export default function LiveCall() {
         try {
           activeWs.close();
         } catch {}
-      }, 50);
+      }, 400);
     }
 
     // 5. Finalize live session state - PRESERVE IT!
@@ -409,21 +544,21 @@ export default function LiveCall() {
     : '00:00';
 
   const currentTrustScore = mode === 'live'
-    ? (liveSession.latestAnalysis?.preliminary_trust?.score ?? 85)
+    ? (liveSession.trust?.trust_score ?? liveSession.latestAnalysis?.fused_trust?.trust_score ?? liveSession.latestAnalysis?.preliminary_trust?.score ?? 85)
     : mode === 'demo'
     ? (demoCallData?.trust_score ?? 82)
     : 100;
 
   const currentRiskLevel = mode === 'live'
-    ? (liveSession.latestAnalysis?.preliminary_trust?.risk_level ?? 'SAFE')
+    ? (liveSession.trust?.risk_level ?? liveSession.latestAnalysis?.fused_trust?.risk_level ?? liveSession.latestAnalysis?.preliminary_trust?.risk_level ?? 'SAFE')
     : mode === 'demo'
     ? (demoCallData?.risk_level || 'SAFE')
     : 'SAFE';
 
   const isCritical = currentTrustScore < 30;
 
-  const antiSpoof = liveSession.latestAnalysis?.voice_authenticity?.anti_spoof;
-  const speakerVerif = liveSession.latestAnalysis?.speaker_verification;
+  const antiSpoof = liveSession.aasist || liveSession.latestAnalysis?.voice_authenticity?.anti_spoof;
+  const speakerVerif = liveSession.ecapa || liveSession.latestAnalysis?.speaker_verification;
   const speakerInfo = liveSession.latestAnalysis?.speaker;
   const voiceCloneParadox = liveSession.latestAnalysis?.voice_clone_paradox;
 
@@ -770,7 +905,13 @@ export default function LiveCall() {
                   </div>
                   <div className="p-2.5 rounded bg-surface-container border border-outline-variant/40 flex justify-between items-center">
                     <span className="text-outline">Semantic Analysis:</span>
-                    <span className="font-bold text-outline text-[11px]">Awaiting Phase 5 (Gemini NLP)</span>
+                    <span className="font-bold text-primary-container text-[11px]">
+                      {liveSession.gemini
+                        ? `${liveSession.gemini.intent || 'analyzed'} (${liveSession.gemini.risk_score ?? liveSession.gemini.social_engineering_risk ?? 0})`
+                        : liveSession.transcript?.status === 'WHISPER_UNAVAILABLE'
+                        ? 'WHISPER_UNAVAILABLE'
+                        : 'Awaiting transcript'}
+                    </span>
                   </div>
                 </div>
               ) : (
@@ -1095,42 +1236,65 @@ export default function LiveCall() {
               <div className="flex items-center gap-2">
                 <span className="material-symbols-outlined text-primary-fixed-dim text-lg">subtitles</span>
                 <h3 className="text-body-md font-bold text-on-surface font-mono">
-                  {mode === 'live' ? 'Live Real-Time Acoustic Forensics Feed' : 'Streaming Transcript & NLP Forensics'}
+                  {mode === 'live' ? 'Live Whisper Transcript & Gemini Intelligence' : 'Streaming Transcript & NLP Forensics'}
                 </h3>
               </div>
               <span className="text-xs font-mono text-outline">
-                {mode === 'live' ? 'DSP VAD + Autocorrelation F0 Engine' : 'Whisper-v3 + Gemini Semantic Engine'}
+                {mode === 'live' ? 'faster-whisper ASR + Gemini conversation risk (not anti-spoof)' : 'DEMO / SIMULATED transcript'}
               </span>
             </div>
 
             {/* Forensic Stream / Transcript Stream container */}
             <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
               {mode === 'live' ? (
-                liveSession.history.length === 0 ? (
-                  <div className="p-4 rounded-lg bg-surface-container border border-outline-variant/30 text-xs font-mono text-outline text-center">
-                    {isLiveActive
-                      ? 'Speak into your microphone... Audio windows are being buffered and analyzed.'
-                      : 'No live audio windows captured in this session.'
-                    }
-                  </div>
-                ) : (
-                  liveSession.history.map((logItem, idx) => (
-                    <div
-                      key={idx}
-                      className={`p-2.5 rounded-lg border text-xs font-mono transition-all ${
-                        logItem.speechDetected
-                          ? 'bg-surface-container border-primary-container/40 text-on-surface'
-                          : 'bg-surface-container-lowest border-outline-variant/30 text-outline'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between text-[10px] text-outline mb-0.5">
-                        <span className="font-bold text-primary-container">[{logItem.timestamp}]</span>
-                        <span className="font-bold text-emerald-400">Score: {logItem.score}</span>
+                <div className="space-y-3">
+                  {liveSession.transcript?.full_text ? (
+                    <div className="p-3 rounded-lg bg-surface-container border border-primary-container/60 text-xs font-mono text-on-surface">
+                      <div className="flex items-center justify-between text-[10px] text-primary-container font-bold mb-1.5 pb-1 border-b border-outline-variant/30">
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                          LIVE TRANSCRIPT ({liveSession.transcript.engine || 'whisper'})
+                        </span>
+                        <span className="text-outline uppercase">LANG: {liveSession.transcript.language || 'en'}</span>
                       </div>
-                      <p className="text-body-sm leading-normal">{logItem.event}</p>
+                      <div className="whitespace-pre-wrap text-body-sm leading-relaxed text-on-surface font-sans">
+                        "{liveSession.transcript.full_text}"
+                      </div>
+                      {liveSession.transcript.status && liveSession.transcript.status !== 'OK' && (
+                        <div className="mt-2 text-amber-300 text-[10px]">{liveSession.transcript.status}</div>
+                      )}
                     </div>
-                  ))
-                )
+                  ) : (
+                    <div className="p-3 rounded-lg bg-surface-container border border-outline-variant/30 text-xs font-mono text-outline text-center">
+                      {isLiveActive
+                        ? 'Listening for speech... Whisper will transcribe speech windows incrementally.'
+                        : 'No live audio windows captured in this session.'
+                      }
+                    </div>
+                  )}
+
+                  {liveSession.history.length > 0 && (
+                    <div className="space-y-1.5 pt-1">
+                      <div className="text-[10px] font-mono text-outline uppercase tracking-wider">Acoustic Window Stream ({liveSession.history.length})</div>
+                      {liveSession.history.slice(0, 5).map((logItem, idx) => (
+                        <div
+                          key={idx}
+                          className={`p-2 rounded-lg border text-xs font-mono transition-all ${
+                            logItem.speechDetected
+                              ? 'bg-surface-container border-primary-container/30 text-on-surface'
+                              : 'bg-surface-container-lowest border-outline-variant/20 text-outline'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between text-[10px] text-outline mb-0.5">
+                            <span className="font-bold text-primary-container">[{logItem.timestamp}]</span>
+                            <span className="font-bold text-emerald-400">Score: {logItem.score}</span>
+                          </div>
+                          <p className="text-[11px] leading-tight truncate">{logItem.event}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               ) : isDemo ? (
                 demoCallData?.transcript_history?.length === 0 ? (
                   <div className="p-4 rounded-lg bg-surface-container border border-outline-variant/30 text-xs font-mono text-outline text-center">
@@ -1171,7 +1335,7 @@ export default function LiveCall() {
                 <span className="text-outline uppercase text-[10px]">CONVERSATION INTENT:</span>
                 <div className={mode === 'live' ? 'text-primary-container font-bold text-sm' : isDemo ? 'text-error font-bold text-sm' : 'text-outline font-bold text-sm'}>
                   {mode === 'live'
-                    ? 'Awaiting Whisper ASR (Phase 4)'
+                    ? (liveSession.gemini?.intent || (liveSession.transcript?.full_text ? 'Transcript received — awaiting Gemini increment' : 'Awaiting live speech for Whisper ASR'))
                     : isDemo
                     ? (demoCallData?.conversation?.intent || 'Coercive Wire Transfer Hijack')
                     : 'Awaiting Ingress Stream'
@@ -1179,7 +1343,13 @@ export default function LiveCall() {
                 </div>
                 <div className="flex flex-wrap gap-1 mt-2">
                   {mode === 'live' ? (
-                    <span className="px-1.5 py-0.5 rounded bg-surface-container-highest text-outline text-[10px]">Real Hardware Microphone Mode</span>
+                    <>
+                      {liveSession.gemini?.authority_impersonation && <span className="px-1.5 py-0.5 rounded bg-error-container/30 text-error text-[10px]">Authority</span>}
+                      {liveSession.gemini?.financial_request && <span className="px-1.5 py-0.5 rounded bg-error-container/30 text-error text-[10px]">Financial</span>}
+                      {liveSession.gemini?.social_engineering && <span className="px-1.5 py-0.5 rounded bg-error-container/30 text-error text-[10px]">Social engineering</span>}
+                      {liveSession.gemini?.urgency && <span className="px-1.5 py-0.5 rounded bg-amber-950/40 text-amber-300 text-[10px]">Urgency</span>}
+                      {!liveSession.gemini && <span className="px-1.5 py-0.5 rounded bg-surface-container-highest text-outline text-[10px]">REAL microphone — no canned transcript</span>}
+                    </>
                   ) : isDemo ? (
                     <>
                       <span className="px-1.5 py-0.5 rounded bg-error-container/30 text-error text-[10px]">Authority Impersonation</span>
@@ -1220,6 +1390,39 @@ export default function LiveCall() {
           </div>
         </div>
       </div>
+
+      {mode === 'live' && liveSession.callId && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="p-4 rounded-xl bg-surface-container-low border border-outline-variant space-y-2 font-mono text-xs">
+            <div className="font-bold text-primary-container">DEMO_CONTEXT (explicit, not telephony)</div>
+            <input className="w-full bg-surface-container border border-outline-variant rounded px-2 py-1" placeholder="Claimed identity" value={demoContextDraft.claimed_identity} onChange={(e) => setDemoContextDraft({ ...demoContextDraft, claimed_identity: e.target.value })} />
+            <input className="w-full bg-surface-container border border-outline-variant rounded px-2 py-1" placeholder="Caller number" value={demoContextDraft.caller_number} onChange={(e) => setDemoContextDraft({ ...demoContextDraft, caller_number: e.target.value })} />
+            <input className="w-full bg-surface-container border border-outline-variant rounded px-2 py-1" placeholder="Amount" value={demoContextDraft.transaction_amount} onChange={(e) => setDemoContextDraft({ ...demoContextDraft, transaction_amount: e.target.value })} />
+            <input className="w-full bg-surface-container border border-outline-variant rounded px-2 py-1" placeholder="Beneficiary" value={demoContextDraft.beneficiary} onChange={(e) => setDemoContextDraft({ ...demoContextDraft, beneficiary: e.target.value })} />
+            <button onClick={submitDemoContext} className="px-3 py-1 rounded bg-primary-container text-on-primary-fixed font-bold">Apply labelled context</button>
+            <div className="text-outline">{liveSession.context?.label || 'No context supplied'}</div>
+          </div>
+          <div className="p-4 rounded-xl bg-surface-container-low border border-outline-variant space-y-2 font-mono text-xs">
+            <div className="font-bold text-primary-container">Gemini reasoning</div>
+            <p className="text-on-surface">{liveSession.gemini?.reasoning || liveSession.gemini?.summary || 'No conversation analysis yet.'}</p>
+            <div>Recommended (evidence only): {liveSession.gemini?.recommended_action || 'n/a'}</div>
+            <div>Trust action: {liveSession.trust?.recommended_action || liveSession.latestAnalysis?.preliminary_trust?.recommended_action || 'MONITOR'}</div>
+          </div>
+          <div className="p-4 rounded-xl bg-surface-container-low border border-outline-variant space-y-2 font-mono text-xs">
+            <div className="font-bold text-primary-container">Incidents</div>
+            {(liveSession.incidents || []).length === 0 ? (
+              <div className="text-outline">No incidents this session.</div>
+            ) : liveSession.incidents.map((inc) => (
+              <div key={inc.incident_id} className="p-2 rounded border border-error/40 text-error">
+                {inc.incident_id}: {inc.title} ({inc.severity})
+              </div>
+            ))}
+            {completedSession?.callId && (
+              <Link to={`/investigation/${completedSession.callId}`} className="block text-primary-container font-bold">Open last completed REAL session</Link>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Action Execution Modal */}
       <ActionModal

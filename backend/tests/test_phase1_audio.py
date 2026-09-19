@@ -206,6 +206,8 @@ class TestPhase1AudioPipeline(unittest.TestCase):
             ack_msg = websocket.receive_json()
             self.assertEqual(ack_msg["type"], "AUDIO_STREAM_STARTED")
             self.assertEqual(ack_msg["sample_rate"], 16000)
+            sess_msg = websocket.receive_json()
+            self.assertEqual(sess_msg["type"], "SESSION_STARTED")
 
             # 3. Stream 1.2 seconds of voiced audio as binary PCM16 (triggers initial analysis)
             t = np.linspace(0, 1.2, int(16000 * 1.2), endpoint=False)
@@ -225,7 +227,13 @@ class TestPhase1AudioPipeline(unittest.TestCase):
 
             # 4. Stop stream
             websocket.send_json({"type": "STOP_AUDIO_STREAM"})
-            stop_msg = websocket.receive_json()
+            stop_msg = None
+            for _ in range(10):
+                msg = websocket.receive_json()
+                if msg.get("type") == "AUDIO_STREAM_STOPPED":
+                    stop_msg = msg
+                    break
+            self.assertIsNotNone(stop_msg)
             self.assertEqual(stop_msg["type"], "AUDIO_STREAM_STOPPED")
 
 if __name__ == "__main__":

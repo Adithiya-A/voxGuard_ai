@@ -32,6 +32,7 @@ def init_session_fields(buf) -> None:
     buf.processed_audio_position = 0
     buf.full_transcript = ""
     buf.last_transcript_piece = ""
+    buf.last_analyzed_transcript = ""
     buf.transcript_history: List[Dict[str, Any]] = []
     buf.conversation_analysis: Optional[Dict[str, Any]] = None
     buf.last_gemini_text_len = 0
@@ -54,12 +55,9 @@ def append_transcript(previous: str, incoming: str) -> str:
         return prev
     if not prev:
         return new
-    if new.lower() in prev.lower():
-        return prev
-    if prev.lower() in new.lower():
-        return new
+    # Check boundary overlap (e.g. up to 120 chars) to merge continuous speech
     max_ol = min(len(prev), len(new), 120)
-    for n in range(max_ol, 12, -1):
+    for n in range(max_ol, 4, -1):
         if prev[-n:].lower() == new[:n].lower():
             return (prev + new[n:]).strip()
     return f"{prev} {new}".strip()
@@ -83,7 +81,11 @@ def incremental_asr(buf) -> Optional[Dict[str, Any]]:
 
     take = min(available, int(16000 * MAX_ASR_SECONDS))
     segment = np.asarray(audio[start:start + take], dtype=np.float32)
-    result = transcription_service.transcribe_audio(segment, sample_rate=16000)
+    result = transcription_service.transcribe_audio(
+        segment,
+        sample_rate=16000,
+        call_id=getattr(buf, "call_id", "LIVE")
+    )
     buf.processed_audio_position = start + take
     buf.last_asr_status = result.get("status")
 
@@ -99,16 +101,14 @@ def incremental_asr(buf) -> Optional[Dict[str, Any]]:
             "error": result.get("error"),
             "inference_ms": result.get("inference_ms", 0.0),
             "model": result.get("model", "faster-whisper"),
+            "engine": "whisper",
         }
 
     if not text:
         return None
 
     new_full = append_transcript(buf.full_transcript, text)
-    if new_full == buf.full_transcript:
-        return None
-
-    piece = new_full[len(buf.full_transcript):].strip() or text
+    piece = text
     buf.full_transcript = new_full
     buf.last_transcript_piece = piece
     entry = {
@@ -138,6 +138,7 @@ def incremental_asr(buf) -> Optional[Dict[str, Any]]:
         "status": result.get("status", "OK"),
         "inference_ms": result.get("inference_ms", 0.0),
         "model": result.get("model", "faster-whisper"),
+        "engine": "whisper",
         "duration": result.get("duration", 0.0),
         "segments": result.get("segments") or [],
     }
@@ -145,21 +146,27 @@ def incremental_asr(buf) -> Optional[Dict[str, Any]]:
 
 def should_run_gemini(buf, full_text: str) -> bool:
     text = (full_text or "").strip()
-    if len(text) < 8:
+    if len(text) < 5:
         return False
-    new_chars = len(text) - int(buf.last_gemini_text_len or 0)
+    last = getattr(buf, "last_analyzed_transcript", "")
+    if text == last:
+        return False
+    new_chars = len(text) - len(last)
     elapsed = time.time() - float(buf.last_gemini_at or 0.0)
     high_risk = conversation_intelligence.contains_high_risk_phrase(text[max(0, len(text) - 200):])
-    return new_chars >= GEMINI_MIN_NEW_CHARS or elapsed >= 5.0 or (high_risk and elapsed >= GEMINI_MIN_INTERVAL_S)
+    return new_chars >= 15 or elapsed >= 4.0 or high_risk
 
 
 def run_gemini(buf, full_text: str, force: bool = False) -> Optional[Dict[str, Any]]:
     init_session_fields(buf)
     text = (full_text or buf.full_transcript or "").strip()
+    if not text or len(text) < 3:
+        return None
     if not force and not should_run_gemini(buf, text):
         return None
     analysis = conversation_intelligence.analyze_transcript(text)
     buf.conversation_analysis = analysis
+    buf.last_analyzed_transcript = text
     buf.last_gemini_text_len = len(text)
     buf.last_gemini_at = time.time()
     try:

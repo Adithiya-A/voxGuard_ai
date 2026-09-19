@@ -73,6 +73,7 @@ class TranscriptionService:
         self,
         audio: np.ndarray,
         sample_rate: int = 16000,
+        call_id: str = "LIVE",
     ) -> Dict[str, Any]:
         duration = float(len(audio) / float(sample_rate)) if audio is not None and len(audio) > 0 else 0.0
         base = {
@@ -95,6 +96,12 @@ class TranscriptionService:
         if peak > 1.0:
             audio = audio / (peak + 1e-8)
         rms = float(np.sqrt(np.mean(audio ** 2))) if len(audio) else 0.0
+
+        logger.info(
+            f"[WHISPER_INPUT] call_id={call_id} sr={sample_rate} samples={len(audio)} "
+            f"duration={duration:.3f}s rms={rms:.4f} peak={peak:.4f}"
+        )
+
         if rms < 1e-4 or duration < 0.25:
             return {
                 **base,
@@ -120,6 +127,7 @@ class TranscriptionService:
                 audio,
                 language=None,
                 vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=500),
                 beam_size=1,
             )
             segments: List[Dict[str, Any]] = []
@@ -129,6 +137,7 @@ class TranscriptionService:
                 if not piece:
                     continue
                 texts.append(piece)
+                logger.info(f"[WHISPER_RESULT] start={seg.start:.2f} end={seg.end:.2f} text=\"{piece}\"")
                 segments.append({
                     "start": round(float(seg.start), 2),
                     "end": round(float(seg.end), 2),

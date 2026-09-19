@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import time
 
 from backend.blockchain.audit import audit_blockchain
+from backend.database.repositories import incident_repo
 
 router = APIRouter(prefix="/api/incidents", tags=["Incidents"])
 
@@ -26,6 +27,7 @@ INCIDENTS_DATABASE: Dict[str, Dict[str, Any]] = {
         "opened_at": "2026-09-04T13:42:31Z",
         "target_account": "Apex Horizon Global Logistics",
         "amount": "₹25,00,000",
+        "mode": "DEMO",
         "assigned_analyst": "C. Vance, CISSP"
     },
     "INC-10481": {
@@ -46,6 +48,7 @@ INCIDENTS_DATABASE: Dict[str, Dict[str, Any]] = {
         "opened_at": "2026-09-04T12:16:05Z",
         "target_account": "Internal Active Directory",
         "amount": "N/A",
+        "mode": "DEMO",
         "assigned_analyst": "C. Vance, CISSP"
     },
     "INC-10480": {
@@ -66,6 +69,7 @@ INCIDENTS_DATABASE: Dict[str, Dict[str, Any]] = {
         "opened_at": "2026-09-04T08:52:10Z",
         "target_account": "Global Freight Ltd",
         "amount": "₹4,50,000",
+        "mode": "DEMO",
         "assigned_analyst": "T. Higgins, SOC Tier 2"
     }
 }
@@ -75,17 +79,44 @@ class ActionRequest(BaseModel):
     reason: str = "SOC Operator Manual Directive"
 
 @router.get("")
-def list_incidents():
-    return list(INCIDENTS_DATABASE.values())
+def list_incidents(mode: Optional[str] = Query(None, description="REAL, DEMO, or ALL")):
+    mode_filter = (mode or "ALL").strip().upper() or "ALL"
+    demo = []
+    for inc in INCIDENTS_DATABASE.values():
+        item = dict(inc)
+        item["mode"] = "DEMO"
+        demo.append(item)
+    real = incident_repo.list_incidents(mode_filter="REAL")
+    if mode_filter == "REAL":
+        return real
+    if mode_filter == "DEMO":
+        return demo
+    seen = {i.get("incident_id") for i in real}
+    return real + [d for d in demo if d.get("incident_id") not in seen]
 
 @router.get("/{incident_id}")
 def get_incident(incident_id: str):
-    if incident_id not in INCIDENTS_DATABASE:
-        raise HTTPException(status_code=404, detail="Incident not found")
-    return INCIDENTS_DATABASE[incident_id]
+    rec = incident_repo.get_incident(incident_id)
+    if rec:
+        return rec
+    if incident_id in INCIDENTS_DATABASE:
+        item = dict(INCIDENTS_DATABASE[incident_id])
+        item["mode"] = "DEMO"
+        return item
+    raise HTTPException(status_code=404, detail="Incident not found")
 
 @router.post("/{incident_id}/action")
 def take_action(incident_id: str, req: ActionRequest):
+    rec = incident_repo.get_incident(incident_id)
+    if rec:
+        rec["current_action"] = req.action
+        rec["status"] = "RESOLVED" if req.action == "RESOLVE" else "ACTION_ENFORCED"
+        try:
+            incident_repo.create_incident(rec)
+        except Exception:
+            pass
+        return {"success": True, "incident": rec, "message": f"Action {req.action} applied to {incident_id}"}
+
     if incident_id not in INCIDENTS_DATABASE:
         raise HTTPException(status_code=404, detail="Incident not found")
     
@@ -99,7 +130,6 @@ def take_action(incident_id: str, req: ActionRequest):
     else:
         inc["status"] = "ACTION_ENFORCED"
 
-    # Cryptographic audit anchor
     audit_blockchain.create_event(
         call_id=inc["call_id"],
         event_type=f"INCIDENT_ACTION_{req.action}",
