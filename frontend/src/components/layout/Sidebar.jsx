@@ -14,6 +14,7 @@ export default function Sidebar() {
   const navItems = [
     { to: '/dashboard', label: 'Overview', icon: 'dashboard' },
     { to: '/live-call', label: 'Live Calls', icon: 'phone_in_talk', badge: 'LIVE', badgeType: 'live' },
+    { to: '/enrollment', label: 'Voice Enrollment', icon: 'fingerprint', badge: 'ECAPA', badgeType: 'emulator' },
     { to: '/incidents', label: 'Threats & Response', icon: 'gshield', badge: `${incidentsCount} ACTIVE`, badgeType: 'alert' },
     { to: '/demo', label: 'Attack Simulator', icon: 'sensors', badge: 'EMULATOR', badgeType: 'emulator' },
     { to: '/call-history', label: 'Call History', icon: 'history' },

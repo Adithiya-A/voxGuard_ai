@@ -21,7 +21,7 @@ export async function fetchApi(endpoint, options = {}) {
 
 export const api = {
   getHealth: () => fetchApi('/api/health'),
-  getCalls: () => fetchApi('/api/calls'),
+  getCalls: (mode) => fetchApi(mode ? `/api/calls?mode=${encodeURIComponent(mode)}` : '/api/calls'),
   getCallById: (id) => fetchApi(`/api/calls/${id}`),
   analyzeCall: (data) => fetchApi('/api/calls/analyze', { method: 'POST', body: JSON.stringify(data) }),
   getIncidents: () => fetchApi('/api/incidents'),
@@ -37,4 +37,7 @@ export const api = {
   updateWeights: (weights) => fetchApi('/api/settings/weights', { method: 'POST', body: JSON.stringify(weights) }),
   getScenarios: () => fetchApi('/api/demo/scenarios'),
   getScenarioById: (id) => fetchApi(`/api/demo/scenario/${id}`),
+  getSpeakers: () => fetchApi('/api/speakers'),
+  enrollSpeaker: (data) => fetchApi('/api/speakers/enroll', { method: 'POST', body: JSON.stringify(data) }),
+  deleteSpeaker: (speakerId) => fetchApi(`/api/speakers/${speakerId}`, { method: 'DELETE' }),
 };

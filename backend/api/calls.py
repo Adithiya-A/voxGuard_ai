@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import time
@@ -10,6 +10,7 @@ from backend.models.prosody import prosody_analyzer
 from backend.intelligence.conversation import conversation_intelligence
 from backend.intelligence.context import context_engine
 from backend.blockchain.audit import audit_blockchain
+from backend.database.repositories import call_repo
 
 router = APIRouter(prefix="/api/calls", tags=["Calls"])
 
@@ -17,6 +18,7 @@ router = APIRouter(prefix="/api/calls", tags=["Calls"])
 CALLS_DATABASE: Dict[str, Dict[str, Any]] = {
     "VS-2026-00081": {
         "call_id": "VS-2026-00081",
+        "mode": "DEMO",
         "caller": "+1 (415) 890-4412 // UNKNOWN VOIP TRUNK",
         "claimed_identity": "Arun Sharma",
         "claimed_role": "Chief Financial Officer",
@@ -99,6 +101,7 @@ CALLS_DATABASE: Dict[str, Dict[str, Any]] = {
     },
     "VS-2026-00080": {
         "call_id": "VS-2026-00080",
+        "mode": "DEMO",
         "caller": "+1 (800) 555-0199 // IT HELPDESK GATEWAY",
         "claimed_identity": "Marcus Reed",
         "claimed_role": "IT Security Helpdesk",
@@ -126,6 +129,7 @@ CALLS_DATABASE: Dict[str, Dict[str, Any]] = {
     },
     "VS-2026-00079": {
         "call_id": "VS-2026-00079",
+        "mode": "DEMO",
         "caller": "+91 98200 12345 // CORPORATE PBX EXT 401",
         "claimed_identity": "Priya Nair",
         "claimed_role": "VP Operations",
@@ -152,6 +156,7 @@ CALLS_DATABASE: Dict[str, Dict[str, Any]] = {
     },
     "VS-2026-00078": {
         "call_id": "VS-2026-00078",
+        "mode": "DEMO",
         "caller": "+44 20 7946 0912 // OUTBOUND RELAY",
         "claimed_identity": "David Ross",
         "claimed_role": "Vendor Procurement Lead",
@@ -167,7 +172,7 @@ CALLS_DATABASE: Dict[str, Dict[str, Any]] = {
         "prosody": {"speech_rate": "Moderate", "pitch_variation": "Slightly Flattened", "behavior_anomaly": 42, "coercive_stress_index": 54},
         "conversation": {"intent": "Invoice Payment Query", "authority_impersonation": False, "urgency": True, "financial_request": True, "confidentiality_pressure": False, "social_engineering_risk": 52},
         "caller_context": {"caller_number": "+44 20 7946 0912", "telephony_trunk": "SIP-UK-04", "known_contact": False, "registered_device": False, "caller_reputation": "Moderate", "caller_risk": 48},
-        "transaction": {"requested_amount": 450000.0, "currency": "INR", "formatted_amount": "₹4,50,000", "new_beneficiary": True, "transaction_risk": 65},
+        "transaction": {"requested_amount": 450000.0, "currency": "INR", "formatted_amount": "₹4,50,00", "new_beneficiary": True, "transaction_risk": 65},
         "transcript_history": [
             {"timestamp": "00:05", "speaker": "David", "text": "Following up on invoice 8491, please expedite processing.", "flagged": True}
         ],
@@ -186,14 +191,55 @@ class AnalyzeRequest(BaseModel):
     claimed_identity: Optional[str] = "CFO"
 
 @router.get("")
-def list_calls():
-    return list(CALLS_DATABASE.values())
+def list_calls(mode: Optional[str] = Query(None, description="Filter by mode: REAL, DEMO, or ALL")):
+    """
+    Returns call records. Real calls are fetched from persistent SQLite database,
+    combined with demo calls. Mode filter can be REAL, DEMO, or ALL.
+    """
+    real_calls_records = call_repo.list_calls(limit=100)
+    real_calls = [r.to_api_dict() for r in real_calls_records]
+
+    # Tag demo calls if not already tagged
+    demo_calls = []
+    for c in CALLS_DATABASE.values():
+        c_copy = dict(c)
+        if "mode" not in c_copy:
+            c_copy["mode"] = "DEMO"
+        demo_calls.append(c_copy)
+
+    mode_filter = (mode or "").strip().upper()
+    if mode_filter == "REAL":
+        return real_calls
+    elif mode_filter == "DEMO":
+        return demo_calls
+    else:
+        # Default: REAL calls first (newest), followed by DEMO calls
+        # Avoid duplicate IDs
+        seen_ids = set()
+        combined = []
+        for call in real_calls:
+            seen_ids.add(call.get("call_id"))
+            combined.append(call)
+        for call in demo_calls:
+            if call.get("call_id") not in seen_ids:
+                combined.append(call)
+        return combined
 
 @router.get("/{call_id}")
 def get_call(call_id: str):
-    if call_id not in CALLS_DATABASE:
-        raise HTTPException(status_code=404, detail=f"Call {call_id} not found")
-    return CALLS_DATABASE[call_id]
+    # First check persistent SQLite database
+    db_rec = call_repo.get_call(call_id)
+    if db_rec:
+        return db_rec.to_api_dict()
+
+    # Next check in-memory / demo database
+    if call_id in CALLS_DATABASE:
+        res = dict(CALLS_DATABASE[call_id])
+        if "mode" not in res:
+            res["mode"] = "DEMO"
+        return res
+
+    raise HTTPException(status_code=404, detail=f"Call {call_id} not found")
 
 @router.post("/analyze")
 def analyze_call_chunk(req: AnalyzeRequest):
@@ -203,9 +249,14 @@ def analyze_call_chunk(req: AnalyzeRequest):
     call_id = req.call_id
     call = CALLS_DATABASE.get(call_id)
     if not call:
+        # Check DB
+        db_rec = call_repo.get_call(call_id)
+        if db_rec:
+            return db_rec.to_api_dict()
         # Create dynamically
         call = {
             "call_id": call_id,
+            "mode": "REAL" if call_id.startswith("VS-LIVE-") else "DEMO",
             "caller": "+1 (415) 890-4412 // UNKNOWN VOIP TRUNK",
             "claimed_identity": "Arun Sharma",
             "claimed_role": "Chief Financial Officer",
@@ -222,3 +273,4 @@ def analyze_call_chunk(req: AnalyzeRequest):
         CALLS_DATABASE[call_id] = call
 
     return call
+

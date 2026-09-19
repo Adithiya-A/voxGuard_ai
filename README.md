@@ -56,7 +56,7 @@ flowchart TD
     B --> C[Voice Activity Detection VAD]
     
     subgraph Multi-Signal Analysis Pipeline
-        C --> D1[Spectral Deepfake Detector FFT / Mel Anomaly]
+        C --> D1[Pretrained AASIST Anti-Spoofing Model]
         C --> D2[Speaker Biometrics ECAPA-TDNN]
         C --> D3[Prosody Analyzer Pitch & Jitter]
         C --> D4[Streaming Whisper STT]
@@ -88,10 +88,10 @@ flowchart TD
 ## 4. Tech Stack
 
 - **Frontend**: React 19, Vite, Tailwind CSS (Stitch Theme Tokens), Lucide React, Google Material Symbols Outlined, Recharts, HTML5 Audio Spectrogram Canvas, WebSocket Client.
-- **Backend**: Python 3.10+, FastAPI, Uvicorn, WebSockets, Pydantic, NumPy, SciPy, Google GenAI SDK.
+- **Backend**: Python 3.10+, FastAPI, Uvicorn, WebSockets, Pydantic, NumPy, SciPy, PyTorch (`torch>=2.0.0`), SpeechBrain (`speechbrain>=1.0.0`), Google GenAI SDK.
 - **AI & Forensics**:
-  - *Spectral Analysis*: Discrete Fourier Transform (FFT), Spectral Centroid, Wiener Flatness, Zero-Crossing Rate, Vocoder High-Frequency Phase Discontinuity.
-  - *Speaker Biometrics*: ECAPA-TDNN Voiceprint Cosine Similarity against FIPS 140-3 Enrolled Centroids.
+  - *Pretrained Audio Anti-Spoofing (Phase 2)*: AASIST (Audio Anti-Spoofing using Integrated Spectro-Temporal Graph Attention Networks, NAVER Corp / Jung et al.), 85,306 parameters, trained on ASVspoof 2019 Logical Access (LA) evaluation benchmark. Raw 16kHz waveform input processed via SincNet filterbank and heterogeneous graph attention modules.
+  - *Pretrained Speaker Biometrics (Phase 3)*: ECAPA-TDNN (Emphasized Channel Attention, Propagation and Aggregation in TDNN, SpeechBrain / Desplanques et al.), trained on VoxCeleb 1 + VoxCeleb 2 datasets. Generates normalized 192-dimensional speaker embeddings compared via cosine similarity against enrolled executive voiceprint profiles.
   - *Conversational Semantics*: Google Gemini Flash NLP + Rule-based Social Engineering Heuristics.
   - *Audit Verification*: SHA-256 Digest Anchoring with Local Merkle Attestation & Polygon Testnet Contract Interface.
 
@@ -111,10 +111,16 @@ VoxGuard AI/
 │   │   └── settings.py       # Trust weights & policy matrix
 │   ├── audio/
 │   │   ├── preprocessing.py  # 16kHz mono conversion & chunking
+│   │   ├── stream_processor.py # Rolling 3s window audio analysis & dispatcher
 │   │   └── vad.py            # Short-Time Energy VAD
 │   ├── models/
-│   │   ├── deepfake_detector.py # Spectral deepfake detection
-│   │   ├── speaker_verification.py # ECAPA-TDNN speaker similarity
+│   │   ├── deepfake_detector.py # Pretrained AASIST deepfake detection wrapper
+│   │   ├── aasist_arch.py    # AASIST neural network architecture (NAVER Corp)
+│   │   ├── speaker_verifier.py  # Pretrained ECAPA-TDNN speaker verification (SpeechBrain)
+│   │   ├── speaker_verification.py # Backward-compatible bridge layer
+│   │   ├── weights/
+│   │   │   ├── AASIST.pth    # Pretrained AASIST checkpoint (1.28 MB)
+│   │   │   └── ecapa_voxceleb/ # Pretrained SpeechBrain ECAPA checkpoint weights
 │   │   ├── prosody.py        # Coercive stress & jitter dynamics
 │   │   └── transcription.py  # Streaming transcript service
 │   ├── intelligence/
@@ -125,6 +131,11 @@ VoxGuard AI/
 │   │   └── rules.py          # Autonomous mitigation policies
 │   ├── blockchain/
 │   │   └── audit.py          # SHA-256 ledger attestation
+│   ├── tests/
+│   │   ├── test_phase1_audio.py      # Audio pipeline & VAD unit tests
+│   │   ├── test_phase2_deepfake.py   # AASIST anti-spoofing unit tests
+│   │   ├── test_phase3_speaker.py    # ECAPA-TDNN speaker biometric unit tests
+│   │   └── test_realtime_data_flow.py # WebSocket data flow & isolation tests
 │   ├── main.py               # FastAPI application & WebSocket server
 │   ├── config.py             # App configuration
 │   └── requirements.txt

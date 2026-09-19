@@ -8,7 +8,7 @@ export default function Header() {
 
   const getBreadcrumb = () => {
     const path = location.pathname;
-    if (path.includes('live-call')) return 'Live Telemetry / Active Voice Stream (VS-2026-00081)';
+    if (path.includes('live-call')) return 'Live Telemetry / Active Voice Stream';
     if (path.includes('investigation')) return 'Adversary Forensics / Deepfake Investigation Dossier';
     if (path.includes('incidents')) return 'Threat Response / Mitigations & Triage Queue';
     if (path.includes('call-history')) return 'Forensics Archive / Call Attestation History';

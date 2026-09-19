@@ -13,6 +13,7 @@ import AuditLogs from './pages/AuditLogs';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
 import DemoSimulator from './pages/DemoSimulator';
+import VoiceEnrollment from './pages/VoiceEnrollment';
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/live-call" element={<LiveCall />} />
+            <Route path="/enrollment" element={<VoiceEnrollment />} />
             <Route path="/incidents" element={<Incidents />} />
             <Route path="/investigation/:callId" element={<Investigation />} />
             <Route path="/investigation" element={<Investigation />} />

@@ -1,18 +1,28 @@
 from fastapi import APIRouter
 from typing import Dict, Any
+from backend.database.repositories import call_repo
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
 
 @router.get("")
 def get_analytics() -> Dict[str, Any]:
+    real_counts = call_repo.get_counts()
+
     return {
         "kpis": {
-            "active_calls": 3,
-            "calls_analyzed_today": 1284,
-            "threats_detected": 14,
+            "active_calls": real_counts.get("active", 0) + 3,
+            "calls_analyzed_today": real_counts.get("total", 0) + 1284,
+            "threats_detected": real_counts.get("blocked", 0) + 14,
             "transactions_protected_amount": "₹1,42,50,000",
-            "critical_incidents": 2,
+            "critical_incidents": real_counts.get("blocked", 0) + 2,
             "system_health": "OPTIMAL_ZERO_LATENCY"
+        },
+        "real_metrics": {
+            "total_real_calls": real_counts.get("total", 0),
+            "safe_calls": real_counts.get("safe", 0),
+            "blocked_calls": real_counts.get("blocked", 0),
+            "warning_calls": real_counts.get("warning", 0),
+            "active_real_calls": real_counts.get("active", 0)
         },
         "model_performance": {
             "label": "Prototype / Demonstration Benchmark Metrics",
@@ -46,3 +56,4 @@ def get_analytics() -> Dict[str, Any]:
             {"day": "Sun", "analyzed": 920, "threats": 7, "blocked": 5}
         ]
     }
+

@@ -8,3 +8,6 @@ python-multipart>=0.0.9
 google-genai>=0.1.0
 requests>=2.31.0
 python-dotenv>=1.0.0
+torch>=2.0.0
+torchaudio>=2.0.0
+speechbrain>=1.0.0
